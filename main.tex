@@ -1,0 +1,217 @@
+\documentclass{article}
+\usepackage{graphicx} % Required for inserting images
+\usepackage{amssymb}
+\usepackage{bm}
+\usepackage{bbm}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tikz-cd}
+\usepackage{float}
+
+
+\title{Next token prediction}
+\author{Jake Feldman Starosta}
+\date{June 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+We want to model feature-label pairs $(\bm{x}^k, y^k)$ in a dataset $\mathcal{D}$, where $y^k$ is the empirical conditional probability measure given that features are $N$th-order Markov. 
+
+\subsection{Notation:}
+\begin{itemize}
+\item $S \subset \mathbb{R}^d$ - individual token embedding space 
+\item $\mathcal{N} = \{1, ..., N\} $ - token index of $N$th-order Markov chain
+\item $x^{i,k} \in S$ - individual token embedding
+\item $\tilde y^k \in S$ - target token embedding
+\item $\bm{x}^k = (x^{1, k}, \dots, x^{N, k}) \in S^N$ - training sample/feature vector
+\item $p_i = \frac{i}{N} \in PE_N$ - positional encoding of token $i$
+\item $X^{i,k} = (x^{i, k} , p_i) \in \mathbb{X} = S\times PE_N$ - feature with token and  positional encoding
+\item $U = (W, A, b, Q, K, V) \in \mathbb{U}$ - actions/model weights
+
+
+\end{itemize}
+
+The difference between this problem and the original paper's \cite{akman2026optimalcontrolapproachtransformer} formulation is that our final distribution has 1. no positional information and 2. lives in a different space to our input. 
+\section{Dataset}
+We begin by constructing our desired dataset with probability measure labels based on a given dataset with deterministic token embedding labels resembling those of the original paper (however, we consider singletons, not sequences).
+
+An initial dataset is given as 
+$$\tilde D = \{(\bm{x}^k, \tilde y^k):k \in \tilde {\mathcal{K}} = \{1, \dots , \tilde K\}\} \subset S^N \times S$$
+where $\bm{x}^k$ is a feature vector and $\tilde{y}^k \in S$ is the target token embedding. The initial dataset $\hat D$ has training samples indexed by $\tilde {\mathcal{K}}$, with possibly some duplicate feature vectors, i.e., $\bm{x}^j = \bm{x}^l$ for $j\neq l$, and $j, l \in \tilde {\mathcal{K}}$. We now construct a new dataset $D$ from $\tilde D$ with labels as probability measures instead of individual token embeddings. 
+We index the unique feature vectors with $\mathcal{K} = \{1, \dots, K\}$, with one representative index picked from $\tilde {\mathcal{K}}$ for each unique feature vector. For $k \in \mathcal{K}$, we define the empirical measure $y^k \in P(S)$ conditioned on $\bm{x}^k$ as  
+$$y^k = \frac{
+\sum_{l=1}^{\tilde {K}} \delta _ {\tilde y^l} \mathbbm{1}_{\{\bm{x}^l = \bm{x}^k\}}
+}{\sum_{l=1}^{\tilde {K}} \mathbbm{1}_{\{\bm{x}^l = \bm{x}^k\}}
+}
+.$$
+
+Then $D = \{(\bm{x}^k, y^k):k \in \mathcal{K}\} \subset S^N \times P(S)$ has unique training samples $\bm{x}^k$, with labels $y^k$ as empirical probability measures. Note that the denominator is non-zero because it is the count of samples in $\hat D$ with feature vector $\bm{x}^k$.
+
+An important distinction between this dataset construction and that of large language models is that here we identify a single target distribution label for a given sample of $N$ tokens. Ideally, we would like to use the information from each token to train our next token prediction model: for an $N$ word sample, we would create $N-1$ sample-label pairs by masking the tokens at and after the predicted token.
+
+\section{Transformer Dynamics}
+Per the paper, $\bm{x}^k = (x^{1, k}, \dots, x^{N, k})$ gives rise to $X^k = (X^{1, k}, \dots X^{N, k})$ where $X^{i, k} = ( p_i, x^{i, k})$ for $i \in \mathcal{N} := \{1, \dots, N\}$. Again, we construct an empirical measure $\mu^i_t \in P(\mathbb{X})$, encoding each particle state and position information. It evolves with a deterministic pushforward $\Phi: P(\mathbb{X})\times \mathbb U \to P(\mathbb{X})$ for $T$ layers indexed by $\mathcal{T}$. We then aggregate all $\mu^i_t$ to an ensemble $((\mu^1_t, ... , \mu^K_t))_{t \in \mathcal{T}}=(\vec \mu_t)_{t \in \mathcal{T}}$ with transition kernel $\eta : P(\mathbb{X})^K \times \mathbb U\to P(P(\mathbb{X}))^K$, where $\eta (\cdot|\vec\mu, U) = \delta _{(\bm{\Phi} (\vec \mu, U))}(\cdot)$ and $\bm{\Phi} : P(\mathbb{X})^K\times \mathbb U \to P(\mathbb{X})^K$ with $\Phi$ applied pointwise to each $\mu^i_t$. 
+
+This defines a MDP on the state space $P(\mathbb{X})^K$ having elements $(\vec \mu_t)_{t \in \mathcal{T}}$, with action space $\mathbb U$, transition kernel $\eta$ and the cost $c$ shown below.
+
+We aim to minimize the following loss functional for a policy $\gamma$:
+
+$$
+V(D, \gamma) =  \frac{1}{K}\sum _{k = 1}^K W_{2}(\nu^k ,y^k)^2 
+$$
+
+We define $\nu^k := \delta_{x^{k, N}_{T, \gamma}}$, where $x^{k, N}_{T, \gamma}$ starts at $x^{k, N}_{0, \gamma} \in S$ belonging to the ensemble probability measure $\mu^k$ evolving according to $\bm{\Phi}$ which takes actions from $\gamma$. We have
+
+$$W_2(P, Q) = \inf _{\pi \in \Pi (P, Q)} \int _{S \times S} \pi(dx, dy) c(x, y)^2$$
+
+with the cost function 
+
+$$ c(x, y) =  \sqrt{||x-y||_2^2}.$$
+
+For our loss, we only compare the probability measure of the last position ($p_N = \frac{N}{N} = 1$) in the output vectors to our label. This is also a trick used in practice in transformer fine-tuning, where features and labels are separated this way (see equation 3 of \cite{radford2018improving}). 
+
+Although this works for training, we're not actually predicting a distribution. We're just predicting a token embedding, and comparing it to the empirical conditional probability measure. 
+
+\section{Quantization}
+
+We select parameters $l, m, n$ to quantize the above MDP into MDP$^{(l, m, n)}$ as follows: we quantize the values of the probability measure on the state space with $l$, the state space itself with $n$, and the action space with $m$. 
+We quantize the token embedding space as $S_n$ such that given $x \in S$, we can find some $s \in S_n$ that satisfies
+$$|x - s| < \frac{1}{n}$$
+which, due to the compactness of $S$, exists and is finite for all $n$. Similarly, due to the compactness of $\mathbb{U}$, we quantize the action space finitely as $\mathbb{U}_m$ so that given $U \in \mathbb{U}$,
+$$||U - \hat U||_F < \frac{1}{m}$$
+for some $\hat U \in \mathbb{U}_m$, where $||\cdot ||_F$ is the product Frobenius norm. 
+
+Let $\mathbb{X}_n := PE_N \times S_n$ and define the set of quantized probability measures on $\mathbb{X}_n$ as 
+$$\mathcal{P} ^{(l)}(\mathbb X_n) = \{(p_a)_{a = 1}^{|\mathbb X_n|}: p_a \in \frac{1}{l} \mathbb{N}_0, \sum_{a = 1}^{|\mathbb X_n|} p_a = 1\}.$$
+
+We define the quantizers $Q_n : \mathbb{X} \to \mathbb{X}_n$ mapping $x \in \mathbb{X}$ to the closest point in $\mathbb{X}_n$ while preserving position, and $R_l : \mathcal P(\mathbb X _n) \to \mathcal P^{(l)}(\mathbb X _n)$ mapping $\hat \mu \in \mathcal P(\mathbb X _n)$ to the closest element in $\mathcal P^{(l)}(\mathbb X _n)$. 
+
+The quantized deterministic ensemble pushforward $\bm \Phi^{(l, n, m)}$ maps $\mathcal P(\mathbb{X}_n)^K\times \mathbb U_m \to \mathcal P(\mathbb X_n)^K$ by quantizing and applying the single-measure pushforward $\Phi ^{(n)}: \mathcal P(\mathbb X_n) \times \mathbb U\to \mathcal P (\mathbb X_n)$ point-wise. It induces the transition kernel $\eta ^{(l, n, m)} : \mathcal P(\mathbb{X}_n)\times \mathbb U_m \to \mathcal P(\mathcal P(\mathbb X_n))$. This characterizes $\text{MDP}^{(l, n, m)}$ with a state space $\mathcal P(\mathbb{X}_n)^K$, action space $\mathbb U_m$, transition kernel $\eta^{(l, n, m)}$ and the same cost $c$ as MDP.
+
+For $\hat \mu, \hat \nu \in P(S_n)$, we define the measure-level cost as 
+$$\hat W_2 (\hat \mu, \hat \nu) = \min _{\hat \pi \in \Pi (\hat \mu, \hat \nu)} \sum _ {\hat x \in S_n}  \sum _ {\hat y \in S_n} \hat \pi (\hat x, \hat y)c(\hat x, \hat y)^2$$
+
+where $$\hat \Pi (\hat \mu, \hat \nu) = \{\hat \pi \in S_n \times S_n : \hat \pi (a,b) \geq 0, \sum _ {a \in S_n} \hat \pi (a, b) = \hat \nu, \sum _ {b \in S_n} \hat \pi (a, b) = \hat \mu\}.$$ 
+
+Our terminal loss functional for $\text{MDP}^{(l, n, m)}$ is given as 
+$$\hat V(D, \hat \gamma) = \frac{1}{K}\sum _{k = 1}^K \hat W_{2}(\hat \mu^{k, N}_T ,\hat y^k)^2$$
+
+where $\hat \mu^{k, N}_T := \delta_{\hat x^{k, N}_{T, \gamma}}$ and $\hat y^k := R_l(y^k)$. Our prediction $\hat x^{k, N}_{T, \hat \gamma}$ is initialized at $\hat x^{k, N}_{0, \hat \gamma} \in S_n$ belonging to the ensemble probability measure $\hat \mu^k$ evolving according to $\bm{\Phi}^{(l, n, m)}$ which takes actions from $\hat \gamma$. 
+
+Note that this loss functional is sufficient for training (as it uses all our prediction information), but does not necessarily translate to performance. Specifically, taking a small $l$ may artificially decrease loss without gaining performance due to coarseness. 
+
+For a given dataset $D$, we pose the dynamic programming equations for $\text{MDP}^{(l, n, m)}$ as follows
+$$
+\begin{aligned} & \mathfrak C _ {l, n, m, T} (\hat {\bm \mu}) := \frac{1}{K}\sum _{k = 1}^K \hat W_{2}(\hat \mu^{k, N}_T ,\hat y^k)^2\\
+&\mathfrak C _ {l, n, m, t} (\hat {\bm \mu}) := \min_{U \in \mathbb U_m} \sum _{\hat{\bm \mu}_{t +1} \in P^{(l)}(\mathbb X_n)^K} \eta^{(l, n, m)}(\hat{\bm \mu}_{t + 1}| \hat{\bm \mu}_t, U)\mathfrak C _ {l, n, m, t + 1} (\hat{\bm \mu}_{t + 1})\\
+&\phantom{\mathfrak C _ {l, n, m, t} (\hat {\bm \mu})}= \min_{U \in \mathbb U_m} \mathfrak C _ {l, n, m, t+1} (\bm \Phi ^{(l, n, m)}(\hat {\bm \mu}, U))
+\end{aligned}
+$$
+
+for all $\hat{\bm \mu} = (\hat \mu ^1, \dots \hat \mu ^K)\in \mathcal P^{(l)}(\mathbb X _n)^K$ and $t \in \mathcal T$. The last equality is due to the deterministic nature of $\bm \Phi ^{(l, n, m)}$.
+
+Note for myself: do we not need to discretize the second one? Not that it should change the policy, but that we don't even have a clean space defined. Also, because the domain of integration isn't continuous. 
+
+\begin{figure}
+    \centering
+    \begin{tikzcd}[row sep=3em, column sep=3em]
+    P(\mathbb{X}) 
+      & P(\mathbb{X}_n) \arrow[r, "R_l"] 
+      & P^{(l)}(\mathbb{X}_n) 
+      \\
+    \mathbb{X} \arrow[u, "\text{lift as } \text{probability measure}"] \arrow[r, "Q_n"]
+      & \mathbb{X}_n \arrow[u] 
+      & 
+      \\
+    S \arrow[u, "\text{lift with } P_{EN}"] \arrow[r, "\text{quantize}"] 
+      & S_n \arrow[u]
+      & \\
+    \end{tikzcd}
+    \caption{Two-stage State Quantization}
+    \label{fig:quantization}
+\end{figure}
+
+\newpage
+\section{Algorithm}
+
+\begin{algorithm}
+\caption{Next Token Prediction with Dynamic Programming}
+\begin{algorithmic}[1]
+
+\State \textbf{Input:} data set $\tilde D = \{(\bm x ^k, \tilde y^k)\}_{k=1}^K$, horizon $T$, quantization levels $(l, n, m)$
+
+\State Construct state grid $S_n$ from $S$ and for $(p,x) \in \mathbb X$ define 
+$$Q_n(p, x) = (p, \arg \min_{s \in S_n}||x-s||)$$
+
+\State Construct finite action set $\mathbb U_m = \{U^1, \dots U^m\}$
+
+\State Construct measure grid $\mathcal P^{(l)} (\mathbb X_n)$ and for $\nu \in P(\mathbb X_n)$ define 
+$$R_l(\nu)  = \arg \min _{\hat \nu \in \mathcal P^{(l)} (\mathbb X_n)} W_2(\nu, \hat \nu)$$
+
+\State \textbf{for} $k = 1, \dots , K$ \textbf{do}
+
+\State \quad $\hat \mu_0^k \leftarrow R_l (\frac{1}{N}\sum _{i=1}^N\delta_{Q_n(p_i, x^{i,k})})$
+
+\State \quad $\hat y^k \leftarrow R_l( {\frac{
+\sum_{j=1}^{\tilde {K}} \delta _ {\tilde y^j} \mathbbm{1}_{\{\bm{x}^j = \bm{x}^k\}}}{\sum_{j=1}^{\tilde {K}} \mathbbm{1}_{\{\bm{x}^j = \bm{x}^k\}}}})$
+
+\State \textbf{end for}
+
+\State Construct dataset $D = \{(\bm x ^k, \hat y^k)\}_{k=1}^K$
+
+\State Define dynamics for $U \in \mathbb U _m$
+$$\Phi ^{(l, n, m)}(\hat \mu, U) = R_l(\Phi^{(n)}(\hat \mu, U))$$
+
+\State Define terminal cost $$\mathfrak C _ {l, n, m, T} (\hat {\bm \mu}) = \frac{1}{K}\sum _{k = 1}^K \hat W_{2}(\hat \mu^{k, N}_T ,\hat y^k)^2$$
+
+\State \textbf{for} $t = T-1$ down to $0$ \textbf{do}
+\State \quad \textbf{for all} $\hat{\bm \mu} = (\hat \mu ^1, \dots , \hat \mu ^K) \in \mathcal P^l(\mathbb X_n)^K$ \textbf{do} 
+
+\State \quad \quad 
+$$\mathfrak C _ {l, n, m, t} (\hat {\bm \mu}) = \min_{U \in \mathbb U_m} \mathfrak C _ {l, n, m, t+1} (\Phi ^{(l, n, m)}(\hat {\mu}^1, U), \dots ,\Phi ^{(l, n, m)}(\hat {\mu}^K, U))$$
+
+\State \quad \quad 
+$$\gamma ^*_t(\hat {\bm \mu}) = \arg \min _{U \in \mathbb{U}_m} \mathfrak C _ {l, n, m, t+1} (\Phi ^{(l, n, m)}(\hat {\mu}^1, U), \dots ,\Phi ^{(l, n, m)}(\hat {\mu}^K, U))$$
+
+\State \quad \textbf{end for}
+\State \textbf{end for}
+\State \textbf{Forward Pass:}
+
+\State \textbf{for} $t = 0, \dots , T-1$ \textbf{do}
+
+\State \quad $U^*_t \leftarrow \gamma ^*_t(\hat \mu _t ^1, \dots , \hat \mu _t ^K)$
+
+\State \quad \textbf{for} $k = 1, \dots K$ \textbf{do}
+
+\State \quad \quad $\hat \mu^k_{t+1} \leftarrow \Phi ^{(l, n, m)}(\hat \mu^k_t, U^*_t)$
+
+\State \quad \textbf{end for}
+\State \textbf{end for}
+\State \textbf{Output:} $(U^*_t) ^{T -1}_{t = 0}$
+
+\end{algorithmic}
+\end{algorithm}
+
+
+\section{Next steps}
+
+Here are some possible options:
+
+\begin{itemize}
+\item Vocabulary (predefined list to map onto and out of $S$, include unembedding matrix in actions)
+\item Masking and sequence-to-sequence prediction (as is actually done in practice)
+\item Filter formulation (Semantic hidden state. Token 'path' as the visible approximations of semantics (?))
+\item   Determine if the underlying state is learned using next token prediction (?)
+
+
+\end{itemize}
+
+\bibliographystyle{plain}
+\bibliography{References}
+
+\end{document}
