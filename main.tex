@@ -137,13 +137,15 @@ Note for myself: do we not need to discretize the second one? Not that it should
 \end{figure}
 
 \newpage
+
 \section{Algorithm}
+
 
 \begin{algorithm}
 \caption{Next Token Prediction with Dynamic Programming}
 \begin{algorithmic}[1]
 
-\State \textbf{Input:} data set $\tilde D = \{(\bm x ^k, \tilde y^k)\}_{k=1}^K$, horizon $T$, quantization levels $(l, n, m)$
+\State \textbf{Input:} data set $\tilde D = \{(\bm x ^k, \tilde y^k)\}_{k=1}^ {\tilde K}$, horizon $T$, quantization levels $(l, n, m)$
 
 \State Construct state grid $S_n$ from $S$ and for $(p,x) \in \mathbb X$ define 
 $$Q_n(p, x) = (p, \arg \min_{s \in S_n}||x-s||)$$
@@ -153,7 +155,7 @@ $$Q_n(p, x) = (p, \arg \min_{s \in S_n}||x-s||)$$
 \State Construct measure grid $\mathcal P^{(l)} (\mathbb X_n)$ and for $\nu \in P(\mathbb X_n)$ define 
 $$R_l(\nu)  = \arg \min _{\hat \nu \in \mathcal P^{(l)} (\mathbb X_n)} W_2(\nu, \hat \nu)$$
 
-\State \textbf{for} $k = 1, \dots , K$ \textbf{do}
+\State \textbf{for} $k = 1, \dots , \tilde K$ \textbf{do}
 
 \State \quad $\hat \mu_0^k \leftarrow R_l (\frac{1}{N}\sum _{i=1}^N\delta_{Q_n(p_i, x^{i,k})})$
 
@@ -162,7 +164,7 @@ $$R_l(\nu)  = \arg \min _{\hat \nu \in \mathcal P^{(l)} (\mathbb X_n)} W_2(\nu, 
 
 \State \textbf{end for}
 
-\State Construct dataset $D = \{(\bm x ^k, \hat y^k)\}_{k=1}^K$
+\State Construct dataset $D = \{(\bm x ^k, \hat y^k)\}_{k=1}^K$ 
 
 \State Define dynamics for $U \in \mathbb U _m$
 $$\Phi ^{(l, n, m)}(\hat \mu, U) = R_l(\Phi^{(n)}(\hat \mu, U))$$
@@ -200,7 +202,12 @@ $$\gamma ^*_t(\hat {\bm \mu}) = \arg \min _{U \in \mathbb{U}_m} \mathfrak C _ {l
 
 \section{Next steps}
 
-Here are some possible options:
+Edits:
+\begin{itemize}
+    \item Previous probability measures and quantization was redundant and sub-optimal. Since N is known, there's no point dividing the dirac measure by N, and then quantizing it so that the entire 'prompt' has measure 1 and each token has measure 1/N. Instead, each token has measure 1 and the prompt has measure N; therefore, quantization with $R_l$ is no longer needed for x, only for y. 
+\end{itemize}
+
+Here are some possible options for future exploration:
 
 \begin{itemize}
 \item Vocabulary (predefined list to map onto and out of $S$, include unembedding matrix in actions)
