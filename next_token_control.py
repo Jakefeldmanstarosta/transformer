@@ -2,9 +2,9 @@
 
 Data is lifted to probability measures on a quantized token-embedding space
 S_n, evolved through a quantized dynamics operator Phi, and the optimal
-policy gamma is found by backward induction on the resulting finite-state
-MDP. Step numbers in section headers (#1, #2, ...) mirror the algorithm
-steps described in the accompanying paper (main.tex).
+policy gamma is found by backward induction over the ensembles reachable
+from the initial data, mirroring the algorithm steps described in the
+accompanying paper (main.tex).
 
 Variable names follow the paper's notation: S_n (quantized state space),
 U_m (quantized action space), mu (lifted probability measures), phi
@@ -41,8 +41,8 @@ def dirac(s):
 
 
 def measure_to_state(mu):
-    """Recover the argmax state index from a measure mu (works for mu_i/mu_k/mu_t shapes)."""
-    return np.argmax(mu, axis=-1)
+    """Recover the state value (not index) from a measure mu (works for mu_i/mu_k/mu_t shapes)."""
+    return S_n[np.argmax(mu, axis=-1)]
 
 
 def W2(p, q):
@@ -73,26 +73,45 @@ def W2(p, q):
 
 
 # =============================================================================
-# Problem data and quantization hyperparameters
+# Problem data: generate an ergodic process and split into data-label pairs
 # =============================================================================
 
-# data-label pairs. S is the interval [0, 5]
-x = [[1, 1],
-     [1, 1],
-     [2, 2],
-     [3, 3],
-     [3, 3]]
-y_tilde = [1, 1, 1, 2, 2]
+# S is the interval [0, 5]
+floor = 0
+ceil = 5
+
+
+def P(X_curr, std=0.5):
+    """Transition kernel: normal distribution centered one step ahead of X_curr."""
+    bell = np.random.normal(loc=X_curr + 1, scale=std)
+    return np.clip(bell, floor, ceil)
+
+
+M = 8
+
+X = [0]
+for r in range(M - 1):
+    X.append(P(X[r]))
+
+# split up the process into data-label pairs
+N = 2
+
+x = []
+y_tilde = []
+
+# start at index N
+for r in range(M - N):
+    x.append(X[r:r + N])
+    y_tilde.append(X[r + N])
 
 K = len(x)
-N = len(x[0])
 
 #1
 D_tilde = list(zip(x, y_tilde))
 
 T = 2   # time horizon = number of layers
 l = 9   # probability measure quantization parameter (l levels = {0, 1/(l-1), ..., 1})
-n = 6   # state space quantization parameter (n states)
+n = 10  # state space quantization parameter (number of states = number of bins + 1)
 m = 5   # action space quantization parameter (unused directly; len(U_m) gives m)
 
 
@@ -101,7 +120,10 @@ m = 5   # action space quantization parameter (unused directly; len(U_m) gives m
 # =============================================================================
 
 #2
-S_n = np.arange(n)
+S_n = []
+for i in range(n):
+    S_n.append(i / 2)
+S_n = np.array(S_n)
 
 
 def Q_n(x):
@@ -199,7 +221,7 @@ def phi(u, mu_t):
 
 
 # =============================================================================
-# Terminal cost and ensemble enumeration (step 11)
+# Terminal cost and reachable-ensemble enumeration (step 11)
 # =============================================================================
 
 #11
@@ -211,67 +233,61 @@ def C_T(mu_T, y=y):
     return total / K
 
 
-def create_ensembles(num_toks=n, toks_per_prompt=N, S=S_n):
-    """Enumerate every way to assign a state in S_n to each of the K x N token slots,
-    i.e. the set P^l(X_n)^K. Computationally explodes as n ^ (K * N) iterations."""
-    indices = [0] * K * N
-
-    while True:
-        yield np.array([dirac(i) for i in indices]).reshape(K, N, n)
-
-        # odometer counting
-        pos = 0
-        while pos < N * K:
-            indices[pos] += 1
-            if indices[pos] > n - 1:
-                indices[pos] = 0
-                pos += 1
-            else:
-                break
-
-        if pos >= N * K:
-            return
-
-
 def ensemble_to_index(mu_t):
     """Map an ensemble of measures to its integer index in the flattened state space."""
     state = np.argmax(mu_t, axis=-1).flatten()  # look at the S_n axis
     return sum(state[i] * (n ** i) for i in range(N * K))
 
 
-num_states = n ** (K * N)
+def create_reachable_ensembles(target_depth=None):
+    """Breadth-first search (capped at depth T) over the ensembles reachable from mu[0]
+    under the dynamics phi and actions U_m, instead of brute-force enumerating all of
+    P^l(X_n)^K (which explodes as n ^ (K * N))."""
+    start_ens = mu[0]
+    visited = {0: {ensemble_to_index(start_ens)}}
+    queue = [(start_ens, 0)]
+
+    head = 0
+    while head < len(queue):
+        curr_ens, depth = queue[head]
+        head += 1
+
+        if target_depth is None or depth == target_depth:
+            yield curr_ens
+
+        if depth < T:
+            visited.setdefault(depth + 1, set())
+            for u in U_m:
+                next_ens = phi(u, curr_ens)
+                next_idx = ensemble_to_index(next_ens)
+                if next_idx not in visited[depth + 1]:
+                    visited[depth + 1].add(next_idx)
+                    queue.append((next_ens, depth + 1))
 
 
 # =============================================================================
 # Backward induction: value function and optimal policy (steps 12-17)
 # =============================================================================
 
-def compute_terminal_costs(num_states):
-    """C[T]: terminal cost for every ensemble state, via brute-force enumeration."""
-    C_terminal = np.zeros(num_states)
-    for i, mu_T in enumerate(create_ensembles()):
-        C_terminal[i] = C_T(mu_T)
-        if i % 1000 == 0:
-            print(i)
-    return C_terminal
+def backward_induction(T, U_m):
+    """Compute the value function C and optimal policy gamma via backward induction,
+    restricted to ensembles reachable from mu[0].
 
-
-def backward_induction(T, num_states, U_m, C_terminal):
-    """Compute the value function C and optimal policy gamma via backward induction.
-
-    C[t][i]     = optimal cost-to-go from ensemble state i at time t
-    gamma[t][i] = optimal action from ensemble state i at time t
+    C[t][i]     = optimal cost-to-go from reachable ensemble index i at time t
+    gamma[t][i] = optimal action from reachable ensemble index i at time t
     """
-    C = np.zeros((T + 1, num_states))
-    C[T] = C_terminal
-    gamma = np.zeros((T, num_states))
+    C = {t: {} for t in range(T + 1)}
+    gamma = {t: {} for t in range(T)}
+
+    for mu_T in create_reachable_ensembles(target_depth=T):
+        C[T][ensemble_to_index(mu_T)] = C_T(mu_T)
 
     for t in range(T - 1, -1, -1):  # goes from T-1 down to 0
-        for i, P in enumerate(create_ensembles()):
-            costs = [C[t + 1][ensemble_to_index(phi(u, P))] for u in U_m]  # indexed by action
+        for mu_t in create_reachable_ensembles(target_depth=t):
+            i = ensemble_to_index(mu_t)
+            costs = [C[t + 1][ensemble_to_index(phi(u, mu_t))] for u in U_m]  # indexed by action
             gamma[t][i] = U_m[np.argmin(costs)]
             C[t][i] = np.min(costs)
-        print(t)
 
     return C, gamma
 
@@ -291,13 +307,12 @@ def forward_pass(T, mu, gamma):
 
 
 def main():
-    #12-17
-    C_terminal = compute_terminal_costs(num_states)
-    C, gamma = backward_induction(T, num_states, U_m, C_terminal)
+    #11-17
+    C, gamma = backward_induction(T, U_m)
 
     #18-25
     mu_final, U_t = forward_pass(T, mu, gamma)
-    print(U_t)  # should be [-2.0, 1.0]
+    print(U_t)
     return U_t
 
 
