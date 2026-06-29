@@ -1,13 +1,15 @@
 """Quantized-MDP formulation of next-token prediction as a control problem.
 
 Data is lifted to probability measures on a quantized token-embedding space
-S_n, evolved through a quantized dynamics operator Phi, and the optimal
-policy gamma is found by backward induction over the ensembles reachable
-from the initial data, mirroring the algorithm steps described in the
-accompanying paper (main.tex).
+S_n, evolved through a quantized dynamics operator Phi built from a
+feedforward block plus single-head attention, and the optimal policy gamma
+is found by backward induction over the ensembles reachable from the
+initial data, mirroring the algorithm steps described in the accompanying
+paper (main.tex).
 
 Variable names follow the paper's notation: S_n (quantized state space),
-U_m (quantized action space), mu (lifted probability measures), phi
+U_m (quantized action space, here a transformer-style Action of
+feedforward/attention weights), mu (lifted probability measures), phi
 (quantized dynamics), R_l / Q_n (probability / state quantizers), W2
 (Wasserstein-2 cost), gamma (policy), C (value function).
 """
@@ -77,14 +79,13 @@ def W2(p, q):
 # =============================================================================
 
 # S is the interval [0, 5]
-floor = 0
-ceil = 5
+S = (0, 5)
 
 
 def P(X_curr, std=0.5):
     """Transition kernel: normal distribution centered one step ahead of X_curr."""
     bell = np.random.normal(loc=X_curr + 1, scale=std)
-    return np.clip(bell, floor, ceil)
+    return np.clip(bell, *S)
 
 
 M = 8
@@ -111,8 +112,12 @@ D_tilde = list(zip(x, y_tilde))
 
 T = 2   # time horizon = number of layers
 l = 9   # probability measure quantization parameter (l levels = {0, 1/(l-1), ..., 1})
-n = 10  # state space quantization parameter (number of states = number of bins + 1)
-m = 5   # action space quantization parameter (unused directly; len(U_m) gives m)
+n = 11  # state space quantization parameter (number of states = number of bins + 1)
+
+# action space quantization parameter: number of quantized levels per action
+# parameter. Quantized actions land within 6 * 1/m of the original action
+# (unlike the 1/m bound in the paper).
+m = 5
 
 
 # =============================================================================
@@ -120,10 +125,7 @@ m = 5   # action space quantization parameter (unused directly; len(U_m) gives m
 # =============================================================================
 
 #2
-S_n = []
-for i in range(n):
-    S_n.append(i / 2)
-S_n = np.array(S_n)
+S_n = np.linspace(*S, n)
 
 
 def Q_n(x):
@@ -133,8 +135,46 @@ def Q_n(x):
 cost_matrix = np.array([[np.linalg.norm(s1 - s2) ** 2 for s1 in S_n] for s2 in S_n])  # used by W2
 
 #3
-U_m = [-2, -1, 0, 1, 2]
-# for our example, we add the weights
+class Action:
+    """A single transformer-style action: feedforward weights (W, A, b) plus
+    single-head attention weights (Q, K, V)."""
+
+    def __init__(self, W, A, b, Q, K, V):
+        self.W = W
+        self.A = A
+        self.b = b
+        self.Q = Q
+        self.K = K
+        self.V = V
+
+    def __repr__(self):
+        return f"W={self.W}, A={self.A}, b={self.b}, Q={self.Q}, K={self.K}, V={self.V}"
+
+
+U = Action((-2, 2), (-2, 2), (0, 0), (-2, 2), (-2, 2), (-2, 2))
+
+
+def space_out(bounds, m):
+    return np.unique(np.linspace(*bounds, m))
+
+
+U_m = Action(space_out(U.W, m),
+             space_out(U.A, m),
+             space_out(U.b, m),
+             space_out(U.Q, m),
+             space_out(U.K, m),
+             space_out(U.V, m))
+
+
+def create_actions(U_m):
+    """Enumerate every combination of quantized per-parameter action values as an Action."""
+    for w_i in U_m.W:
+        for a_i in U_m.A:
+            for b_i in U_m.b:
+                for q_i in U_m.Q:
+                    for k_i in U_m.K:
+                        for v_i in U_m.V:
+                            yield Action(w_i, a_i, b_i, q_i, k_i, v_i)
 
 #4
 # assume l > 0
@@ -195,19 +235,33 @@ mu[0] = mu_0
 # =============================================================================
 
 #10
-def f(s, mu_i, u, S=S_n):  # arbitrary example function right now; TODO implement attention
-    # dynamics here are done at the state level; can equally be done at the individual measure level
-    if (s + u) in S:
-        return s + u
-    return s
+def relu(x):
+    return np.maximum(0, x)
+
+
+def softmax(x):
+    e = np.exp(x)
+    return e / e.sum()
+
+
+def f(s, mu_k, u):
+    """Quantized dynamics at the state level: a feedforward block plus single-head
+    self-attention over the other token measures in the ensemble member mu_k."""
+    ff = u.W * relu(u.A * s + u.b)
+
+    scores = np.array([s * u.Q * measure_to_state(mu_i) * u.K for mu_i in mu_k])
+    weights = softmax(scores)
+    attn = np.sum(weights * u.V * np.array([measure_to_state(mu_i) for mu_i in mu_k]))
+
+    return np.clip(attn + ff, *S)
 
 
 def phi_n(u, mu_k):
     """Apply action u to every token measure in a single ensemble member mu_k."""
     result = []
-    for x in mu_k:
-        s = measure_to_state(x)
-        s = Q_n(f(s, x, u))
+    for mu_i in mu_k:
+        s = measure_to_state(mu_i)
+        s = Q_n(f(s, mu_k, u))
         result.append(dirac(s))
     return np.array(result)
 
@@ -241,8 +295,8 @@ def ensemble_to_index(mu_t):
 
 def create_reachable_ensembles(target_depth=None):
     """Breadth-first search (capped at depth T) over the ensembles reachable from mu[0]
-    under the dynamics phi and actions U_m, instead of brute-force enumerating all of
-    P^l(X_n)^K (which explodes as n ^ (K * N))."""
+    under the dynamics phi and the quantized actions of U_m, instead of brute-force
+    enumerating all of P^l(X_n)^K (which explodes as n ^ (K * N))."""
     start_ens = mu[0]
     visited = {0: {ensemble_to_index(start_ens)}}
     queue = [(start_ens, 0)]
@@ -257,7 +311,7 @@ def create_reachable_ensembles(target_depth=None):
 
         if depth < T:
             visited.setdefault(depth + 1, set())
-            for u in U_m:
+            for u in create_actions(U_m):
                 next_ens = phi(u, curr_ens)
                 next_idx = ensemble_to_index(next_ens)
                 if next_idx not in visited[depth + 1]:
@@ -278,6 +332,7 @@ def backward_induction(T, U_m):
     """
     C = {t: {} for t in range(T + 1)}
     gamma = {t: {} for t in range(T)}
+    actions = list(create_actions(U_m))
 
     for mu_T in create_reachable_ensembles(target_depth=T):
         C[T][ensemble_to_index(mu_T)] = C_T(mu_T)
@@ -285,8 +340,8 @@ def backward_induction(T, U_m):
     for t in range(T - 1, -1, -1):  # goes from T-1 down to 0
         for mu_t in create_reachable_ensembles(target_depth=t):
             i = ensemble_to_index(mu_t)
-            costs = [C[t + 1][ensemble_to_index(phi(u, mu_t))] for u in U_m]  # indexed by action
-            gamma[t][i] = U_m[np.argmin(costs)]
+            costs = [C[t + 1][ensemble_to_index(phi(u, mu_t))] for u in actions]  # indexed by action
+            gamma[t][i] = actions[np.argmin(costs)]
             C[t][i] = np.min(costs)
 
     return C, gamma
