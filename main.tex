@@ -37,8 +37,25 @@ We want to model feature-label pairs $(\bm{x}^k, y^k)$ in a dataset $\mathcal{D}
 \end{itemize}
 
 The difference between this problem and the original paper's \cite{akman2026optimalcontrolapproachtransformer} formulation is that our final distribution has 1. no positional information and 2. lives in a different space to our input. 
+
+
 \section{Dataset}
-We begin by constructing our desired dataset with probability measure labels based on a given dataset with deterministic token embedding labels resembling those of the original paper (however, we consider singletons, not sequences).
+We begin by constructing a generally non-Markovian process $\{z_r\}_{r \in \mathbb{Z_+}}$ on $S^\mathbb{Z_+}$ parameterized by $\xi \in [0,1]$, its Markovian characteristic. For all Borel $A \subset S$, we define an $N$th order Markov transition probability
+$$P_1(z_t\in A|z_{[0, t-1]}) = P_1(z_t\in A|z_{[\max(0, t-N), t-1]})$$
+and a non-Markovian transition probability 
+$$P_2(z_t\in A|z_{[0, t-1]}) = P_2(z_t\in A|z_{[0, \max(0, t-N-1)]}).
+$$ 
+We then define the transition probability $P$ of $\{z_r\}$ as 
+$$ P(z_t\in A|z_{[0, t-1]}) = \xi \cdot P_1(z_t\in A|z_{[\max(0, t-N), t-1]}) + (1 - \xi) \cdot P_2(z_t\in A|z_{[0, \max(0, t-N-1)]}).
+$$
+
+Note that $\{z_r\}$ is an $N$th order Markov chain if and only if $\xi = 1$  .
+
+Note to self: Do we want P to be ergodic? If so, it may be difficult if P2 has increasing context. Might want to cap P2 to be markovian of order 2N, prove ergodicity on that, then bring it back to show that it holds for P. 
+
+We derive our dataset from our process by taking the first $$.
+
+constructing our desired dataset with probability measure labels based on a given dataset with deterministic token embedding labels resembling those of the original paper (however, we consider singletons, not sequences).
 
 An initial dataset is given as 
 $$\tilde D = \{(\bm{x}^k, \tilde y^k):k \in \tilde {\mathcal{K}} = \{1, \dots , \tilde K\}\} \subset S^N \times S$$
@@ -199,6 +216,47 @@ $$\gamma ^*_t(\hat {\bm \mu}) = \arg \min _{U \in \mathbb{U}_m} \mathfrak C _ {l
 \end{algorithmic}
 \end{algorithm}
 
+\section{Experiment}
+
+\begin{figure}
+         \centering
+         \includegraphics[width=0.5\linewidth]{xi0-1.png}
+         \caption{xi = 0}
+         \label{fig:placeholder}
+     \end{figure}
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{xi0-2.png}
+    \caption{xi=0}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{xi05-1.png}
+    \caption{xi = 0.5}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{xi05-2.png}
+    \caption{xi = 0.5}
+    \label{fig:placeholder}
+\end{figure}
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{xi1-1.png}
+    \caption{xi = 1.0}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{xi1-2.png}
+    \caption{xi = 1.0}
+    \label{fig:placeholder}
+\end{figure}
 
 \section{Next steps}
 
@@ -207,16 +265,6 @@ Edits:
     \item Previous probability measures and quantization was redundant and sub-optimal. Since N is known, there's no point dividing the dirac measure by N, and then quantizing it so that the entire 'prompt' has measure 1 and each token has measure 1/N. Instead, each token has measure 1 and the prompt has measure N; therefore, quantization with $R_l$ is no longer needed for x, only for y. 
 \end{itemize}
 
-Here are some possible options for future exploration:
-
-\begin{itemize}
-\item Vocabulary (predefined list to map onto and out of $S$, include unembedding matrix in actions)
-\item Masking and sequence-to-sequence prediction (as is actually done in practice)
-\item Filter formulation (Semantic hidden state. Token 'path' as the visible approximations of semantics (?))
-\item   Determine if the underlying state is learned using next token prediction (?)
-
-
-\end{itemize}
 
 \bibliographystyle{plain}
 \bibliography{References}
