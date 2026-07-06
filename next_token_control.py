@@ -124,7 +124,7 @@ def measure_to_state(mu):  #works for any shape of mu (mu_i/mu_k/mu_t)
     #this returns that with the highest probability. we may want to impliment this to return all matches in the future
     return S_n[np.argmax(mu, axis = -1)]
 
-def one_hot(x):
+def one_hot(x, n):
     v = np.zeros(n)
     v[x] = 1
     return v
@@ -146,14 +146,14 @@ def C_T(mu_T, y, loss):
             total += W2(mu_T[k][N-1], y[k])
     return total / K_local
         
-def create_reachable_ensembles(target_depth = None):
+def create_reachable_ensembles(mu_0, target_depth = None):
     #breadth first search with capped depth of T
     count = 0
     visited = {}
     queue = []
     #keep track of ensemble, depth 
     
-    start_ens = mu[0]
+    start_ens = mu_0
     start_idx = ensemble_to_index(start_ens)
 
     visited[0] = {start_idx}
@@ -174,7 +174,6 @@ def create_reachable_ensembles(target_depth = None):
             for u in create_actions(U_m):
                 next_ens = phi(u, curr_ens)
                 next_idx = ensemble_to_index(next_ens)
-                print(count)
                 count += 1
                 if next_idx not in visited[depth + 1]:
                     visited[depth + 1].add(next_idx)
@@ -188,24 +187,51 @@ def ensemble_to_index(mu_t):
 
 # BEEFY FUNCTIONS
 
-def generate_process(n, K_tilde, N, xi):
-    #generates a process of indices (for the states) 
+def generate_process(n, K_tilde, N, xi, chain = 'deterministic'):
+    #generates a process of indices (for the states)
     
-    transition_matrix = np.random.rand(n, n)
-    for i in range(n):
-        transition_matrix[i] /= np.sum(transition_matrix[i])
-
-
-    X = [0]
-    for r in range(K_tilde + N - 1):
-        P1 = np.sum([one_hot(x) @ transition_matrix for x in X[-N:]], axis = 0)
-        P2 = np.sum([one_hot(x) @ transition_matrix for x in X[0:-N]], axis = 0)
-
-        P = xi * P1 + (1.0 - xi) * P2
-        P = P / P.sum()
-        X.append(np.random.choice(n, p=P))
+    X = []
+    V = []
+    Y = []
+    n_samples = K_tilde + N - 1
     
-    return X
+    if chain == 'deterministic':
+        transition_dict = np.zeros(n ** N)
+        for i in range(n ** N):
+            transition_dict[i] = np.random.randint(0, n)
+
+        for r in range(N):
+            X.append(0)
+            V.append(int(np.random.normal(0, scale = (1-xi)*n)))
+            Y.append(int(max(min(X[r]+V[r], n-1), 0)))
+                    
+        for r in range(N, n_samples):
+            idx = int(n * X[r-2] + X[r-1])
+            X.append(transition_dict[idx])
+            V.append(int(np.random.normal(0, scale = (1 - xi)*n)))
+            Y.append(int(max(min(X[r]+V[r], n-1), 0)))
+        
+        return Y
+
+    if chain == 'probabilistic':
+        transition_matrix = np.random.rand(N * n, n)
+        for i in range(N * n):
+            transition_matrix[i] /= np.sum(transition_matrix[i])
+
+        for r in range(N):
+            X.append(one_hot(0, n))
+            V.append(np.ones(n)/n)
+
+        for r in range(N, n_samples): 
+            X.append(np.concatenate(X[-N:])/N @ transition_matrix) #Markovian
+            V.append(np.ones(n)/n) #uniform non-Markovian
+
+        for r in range(n_samples):
+            dist = xi * X[r] + (1.0 - xi) * V[r]
+            dist /= np.sum(dist)
+            Y.append(np.random.choice(n, p= dist))
+
+        return Y
 
 def create_pairs(X, S_n, N, K_tilde):
     x = []
@@ -247,7 +273,7 @@ def construct_empirical_distribution(x, y_tilde, N, S_n):
         denom = np.sum(y[k])
         y[k] /= denom
     
-    return mu_0, y
+    return np.array(mu_0), y
 
 
 # VISUALIZATION
@@ -282,8 +308,6 @@ def visualize(mu_arr, y_labels):
     plt.legend()
     plt.show()
 
-visualize(mu, y)
-
 
 # PARAMETERS
 
@@ -291,13 +315,13 @@ T = 2       # time horizon = number of layers
 
 l = 9       # probability measure quantizations
 
-n = 5       # state space quantizations
+n = 2       # state space quantizations
 
-m = 5       # action space quantization 
+m = 3       # action space quantization 
 
 N = 2       # length of prompt/order of markov chain 
 
-K_tilde = 18 #number of training pairs (state labels) 
+K_tilde = 98 #number of training pairs (state labels) 
 
 xi = 0.8    # 0 = non-Markovian, 1 = Markovian
 
@@ -306,11 +330,13 @@ beta = 0.3  # attention temperature
 LOSS = 'Cross Entropy'
 
 
-# TRANSFORMER TRAINING
+#STATE
 
 # S is the interval [0, 5]
 S = (-2.5, 2.5)
 #d = 1
+
+#QUANTIZERS
 
 #create example quantized state space
 S_n = np.linspace(*S, n)
@@ -318,60 +344,74 @@ S_n = np.linspace(*S, n)
 #used for W2
 cost_matrix = np.array([[np.linalg.norm(s1 - s2)**2 for s1 in S_n] for s2 in S_n])
 
-#construct dataset
-X = generate_process(n, K_tilde,  N , xi)
-x, y_tilde = create_pairs(X, S_n, N, K_tilde)
-
 P_l = {i/(l -1) for i in range(0, l)}
 U_m = Action((1, 1), (-2, 2), (-2 , 2), (1,1), (-2,2), (-2, 2), m = m)
 
-#lift and dedup the dataset 
-mu_0, y = construct_empirical_distribution(x, y_tilde, N, S_n)
-mu = np.zeros((T + 1, *mu_0.shape))
-mu[0] = mu_0
 
-#define terminal cost
-C = {} 
-for t in range(T+1):
-    C[t] = {} 
-for i, mu_T in enumerate(create_reachable_ensembles(target_depth=T)):
-    C[T][ensemble_to_index(mu_T)] = C_T(mu_T, y, LOSS)
+# TRANSFORMER TRAINING
 
-gamma = {}
-for t in range(T):
-    gamma[t] = {}
-actions = list(create_actions(U_m))
+def train(xi):
+    #construct dataset
+    X = generate_process(n, K_tilde,  N , xi)
+    x, y_tilde = create_pairs(X, S_n, N, K_tilde)
 
-#solve dp
-for t in range(T-1, -1, -1): #goes from T-1 to 0
-    for mu_t in create_reachable_ensembles(target_depth=t):
-        
-        i = ensemble_to_index(mu_t)
-        costs = [C[t+1][ensemble_to_index(phi(u, mu_t))] for u in actions] #costs indexed by each action
-        best_idx = np.argmin(costs)
-        gamma[t][i] = actions[best_idx]
-        C[t][i] = np.min(costs)
+    #lift and dedup the dataset 
+    mu_0, y = construct_empirical_distribution(x, y_tilde, N, S_n)
+    mu = np.zeros((T + 1, *mu_0.shape))
+    mu[0] = mu_0
 
-#forward pass
-U_t = []
-for t in range(T): 
-    optimal_u = gamma[t][ensemble_to_index(mu[t])]
-    mu[t + 1] = phi(optimal_u, mu[t])
-    U_t.append(optimal_u)
+    #define terminal cost
+    C = {} 
+    for t in range(T+1):
+        C[t] = {} 
+    for i, mu_T in enumerate(create_reachable_ensembles(mu[0], target_depth=T)):
+        C[T][ensemble_to_index(mu_T)] = C_T(mu_T, y, LOSS)
+
+    gamma = {}
+    for t in range(T):
+        gamma[t] = {}
+    actions = list(create_actions(U_m))
+
+    #solve dp
+    for t in range(T-1, -1, -1): #goes from T-1 to 0
+        for mu_t in create_reachable_ensembles(mu[0], target_depth=t):
+            
+            i = ensemble_to_index(mu_t)
+            costs = [C[t+1][ensemble_to_index(phi(u, mu_t))] for u in actions] #costs indexed by each action
+            best_idx = np.argmin(costs)
+            gamma[t][i] = actions[best_idx]
+            C[t][i] = np.min(costs)
+
+    #forward pass
+    U_t = []
+    for t in range(T): 
+        optimal_u = gamma[t][ensemble_to_index(mu[t])]
+        mu[t + 1] = phi(optimal_u, mu[t])
+        U_t.append(optimal_u)
+    
+    return U_t, mu, y
 
 
 # TESTING
+def test(U_t, xi):
+    X_test = generate_process(n, K_tilde, N, xi=0.5)
+    x_test, y_tilde_test = create_pairs(X_test, S_n, N, K_tilde)
+    mu_0_test, y_test = construct_empirical_distribution(x_test, y_tilde_test, N, S_n)
 
-X_test = generate_process(n, K_tilde, N, xi=0.5)
-x_test, y_tilde_test = create_pairs(X_test, S_n, N, K_tilde)
-mu_0_test, y_test = construct_empirical_distribution(x_test, y_tilde_test, N, S_n)
+    mu_0_test = np.array(mu_0_test)
+    mu_test = np.zeros((T + 1, *mu_0_test.shape))
+    mu_test[0] = mu_0_test
 
-mu_0_test = np.array(mu_0_test)
-mu_test = np.zeros((T + 1, *mu_0_test.shape))
-mu_test[0] = mu_0_test
+    #Forward pass
+    for t in range(T):
+        mu_test[t + 1] = phi(U_t[t], mu_test[t])
 
-#Forward pass
-for t in range(T):
-    mu_test[t + 1] = phi(U_t[t], mu_test[t])
+    return mu_test, y_test
 
-visualize(mu_test, y_test)
+if __name__ == "__main__":
+    for xi in {0.01, 0.5, 1.0}:
+        actions, mu, y = train(xi)
+        visualize(mu, y)
+        test(actions, xi)
+
+
