@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.optimize import linprog
 import matplotlib.pyplot as plt
+import os
 
 
 # QUANTIZERS
@@ -92,16 +93,16 @@ def f(s, mu_k, u):
 
     ff = u.W * relu(u.A * s + u.b)
     
-    scores = np.array([s * u.Q * measure_to_state(mu_i) * u.K for mu_i in mu_k])
+    scores = np.array([s * u.Q * top_measure_to_state(mu_i) * u.K for mu_i in mu_k])
     weights = softmax(beta * scores)
-    attn = np.sum(weights * u.V * np.array([measure_to_state(mu_i) for mu_i in mu_k]))
+    attn = np.sum(weights * u.V * np.array([top_measure_to_state(mu_i) for mu_i in mu_k]))
     
     return np.clip(attn + ff, *S)
 
 def phi_n(u, mu_k):
     result = []
     for mu_i in mu_k:
-        s = measure_to_state(mu_i)
+        s = top_measure_to_state(mu_i)
         s = Q_n(f(s, mu_k, u), S_n)
         result.append(dirac(s))
     return np.array(result)
@@ -120,9 +121,19 @@ def dirac(s):
     mu_i[idx] = 1
     return mu_i
 
-def measure_to_state(mu):  #works for any shape of mu (mu_i/mu_k/mu_t)
-    #this returns that with the highest probability. we may want to impliment this to return all matches in the future
+def top_measure_to_state(mu):  #works for any shape of mu (mu_i/mu_k/mu_t)
     return S_n[np.argmax(mu, axis = -1)]
+
+def measure_to_state(mu_t): #works for shape mu_t
+    states = []
+    probs = []
+    for mu_k in mu_t:
+        order = np.argsort(mu_k)[::-1]
+        nonzero = mu_k[order] > 0
+        idxs = order[nonzero]
+        states.append(S_n[idxs]) 
+        probs.append(mu_k[idxs])
+    return states, probs
 
 def one_hot(x, n):
     v = np.zeros(n)
@@ -187,18 +198,21 @@ def ensemble_to_index(mu_t):
 
 # BEEFY FUNCTIONS
 
-def generate_process(n, K_tilde, N, xi, chain = 'deterministic'):
+def generate_process(n, K_tilde, N, xi, chain = 'deterministic', transition = None):
     #generates a process of indices (for the states)
-    
     X = []
     V = []
     Y = []
     n_samples = K_tilde + N - 1
     
     if chain == 'deterministic':
-        transition_dict = np.zeros(n ** N)
-        for i in range(n ** N):
-            transition_dict[i] = np.random.randint(0, n)
+        
+        if transition is None:
+            transition_dict = np.zeros(n ** N, dtype=int)
+            for i in range(n ** N):
+                transition_dict[i] = np.random.randint(0, n)
+        else: 
+            transition_dict = transition
 
         for r in range(N):
             X.append(0)
@@ -211,12 +225,16 @@ def generate_process(n, K_tilde, N, xi, chain = 'deterministic'):
             V.append(int(np.random.normal(0, scale = (1 - xi)*n)))
             Y.append(int(max(min(X[r]+V[r], n-1), 0)))
         
-        return Y
+        return Y, transition_dict
 
     if chain == 'probabilistic':
-        transition_matrix = np.random.rand(N * n, n)
-        for i in range(N * n):
-            transition_matrix[i] /= np.sum(transition_matrix[i])
+
+        if transition is None:
+            transition_matrix = np.random.rand(N * n, n)
+            for i in range(N * n):
+                transition_matrix[i] /= np.sum(transition_matrix[i])
+        else:
+            transition_matrix = transition
 
         for r in range(N):
             X.append(one_hot(0, n))
@@ -231,7 +249,7 @@ def generate_process(n, K_tilde, N, xi, chain = 'deterministic'):
             dist /= np.sum(dist)
             Y.append(np.random.choice(n, p= dist))
 
-        return Y
+        return Y, transition_matrix
 
 def create_pairs(X, S_n, N, K_tilde):
     x = []
@@ -278,35 +296,42 @@ def construct_empirical_distribution(x, y_tilde, N, S_n):
 
 # VISUALIZATION
 
-def visualize(mu_arr, y_labels):
+def visualize(mu_arr, y_labels, RESULTS_PATH, name):
+    #first figure
+    filename = name + "-1.png"
+    predicted = top_measure_to_state(mu_arr[T])[:, -1]
+    label_states, label_probs = measure_to_state(np.array(y_labels))
+
+    plt.plot(predicted, 's', label=f'after', color='orange')
     K_viz = len(y_labels)
-    before = measure_to_state(mu_arr[0])[:, -1]
-    after = measure_to_state(mu_arr[T])[:, -1]
-    labels = measure_to_state(np.array(y_labels))
+    for k in range(K_viz):
+        xs = np.full(len(label_states[k]), k)
+        plt.scatter(xs, label_states[k], s=np.array(label_probs[k]) * 300,
+                    color='C0', alpha=0.6, label='label' if k == 0 else None)
+
+    
+    plt.xlabel(r"$\mathcal{K}$ index")
+    plt.ylabel("State")
+    plt.legend()
+    plt.savefig(os.path.join(RESULTS_PATH, filename))
+    plt.close()
+
+    #second figure
+    filename = name + "-2.png"
 
     loss_before = C_T(mu_arr[0], y_labels, LOSS)
     loss_after = C_T(mu_arr[T], y_labels, LOSS)
+    promptwise_loss_before = [cross_entropy(mu_arr[0][k][-1], y_labels[k]) for k in range(K_viz)]
+    promptwise_loss_after = [cross_entropy(mu_arr[T][k][-1], y_labels[k]) for k in range(K_viz)]
 
-    plt.plot(labels, 'o', label='label')
-    plt.plot(before, 's', label=f'before (loss = {loss_before:.2f})', color='gray')
-    plt.plot(after, 's', label=f'after (loss = {loss_after:.2f})', color='orange')
+    #plt.fill_between(np.arange(K_viz), promptwise_loss_before, alpha=0.25, label=f'before (loss = {loss_before:.2f})', color='blue')
+    plt.fill_between(np.arange(K_viz), promptwise_loss_after, alpha=0.25, label=f'after (loss = {loss_after:.2f})', color='orange')
 
-    for k in range(K_viz):
-        plt.plot([k-0.02, k-0.02], [before[k], labels[k]], '-', color='gray', lw=1)
-        plt.plot([k+0.02, k+0.02], [after[k], labels[k]], '-', color='orange', lw=1)
-
+    plt.xlabel(r"$\mathcal{K}$ index")
+    plt.ylabel("Prompt-level loss between predicted and actual labels")
     plt.legend()
-    plt.show()
-
-    plt.fill_between(np.arange(K_viz), before - labels, alpha=0.25, label=f'before (loss = {loss_before:.2f})', color='gray')
-    plt.fill_between(np.arange(K_viz), after - labels, alpha=0.25, label=f'after (loss = {loss_after:.2f})', color='orange')
-
-    for k in range(K_viz):
-        plt.plot([k-0.02, k-0.02], [(before - labels)[k], 0], color='gray', lw=1)
-        plt.plot([k+0.02, k+0.02], [(after - labels)[k], 0], color='orange', lw=1)
-
-    plt.legend()
-    plt.show()
+    plt.savefig(os.path.join(RESULTS_PATH, filename))
+    plt.close()
 
 
 # PARAMETERS
@@ -315,7 +340,7 @@ T = 2       # time horizon = number of layers
 
 l = 9       # probability measure quantizations
 
-n = 2       # state space quantizations
+n = 5       # state space quantizations
 
 m = 3       # action space quantization 
 
@@ -323,7 +348,7 @@ N = 2       # length of prompt/order of markov chain
 
 K_tilde = 98 #number of training pairs (state labels) 
 
-xi = 0.8    # 0 = non-Markovian, 1 = Markovian
+#xi = 1.0    # 0 = non-Markovian, 1 = Markovian
 
 beta = 0.3  # attention temperature  
 
@@ -352,7 +377,7 @@ U_m = Action((1, 1), (-2, 2), (-2 , 2), (1,1), (-2,2), (-2, 2), m = m)
 
 def train(xi):
     #construct dataset
-    X = generate_process(n, K_tilde,  N , xi)
+    X, transition = generate_process(n, K_tilde,  N , xi)
     x, y_tilde = create_pairs(X, S_n, N, K_tilde)
 
     #lift and dedup the dataset 
@@ -389,12 +414,12 @@ def train(xi):
         mu[t + 1] = phi(optimal_u, mu[t])
         U_t.append(optimal_u)
     
-    return U_t, mu, y
+    return U_t, mu, y, transition
 
 
 # TESTING
-def test(U_t, xi):
-    X_test = generate_process(n, K_tilde, N, xi=0.5)
+def test(U_t, xi, transition):
+    X_test, _ = generate_process(n, K_tilde, N, xi, transition=transition)
     x_test, y_tilde_test = create_pairs(X_test, S_n, N, K_tilde)
     mu_0_test, y_test = construct_empirical_distribution(x_test, y_tilde_test, N, S_n)
 
@@ -410,8 +435,9 @@ def test(U_t, xi):
 
 if __name__ == "__main__":
     for xi in {0.01, 0.5, 1.0}:
-        actions, mu, y = train(xi)
-        visualize(mu, y)
-        test(actions, xi)
+        actions, mu, y, transition = train(xi)
+        visualize(mu, y, r"C:\Users\jakef\Projects\next-token-prediction-control\results", name = "train" + str(xi))
+        mu_test, y_test = test(actions, xi, transition)
+        visualize(mu_test, y_test, r"C:\Users\jakef\Projects\next-token-prediction-control\results", "test" + str(xi))
 
 
