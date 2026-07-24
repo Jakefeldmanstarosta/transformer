@@ -231,6 +231,10 @@ def generate_process(n, K_tilde, N, xi, chain = 'deterministic', transition = No
 
         if transition is None:
             transition_matrix = np.random.rand(N * n, n)
+
+            clustering_constant = 1000
+            transition_matrix = transition_matrix ** clustering_constant
+
             for i in range(N * n):
                 transition_matrix[i] /= np.sum(transition_matrix[i])
         else:
@@ -250,6 +254,25 @@ def generate_process(n, K_tilde, N, xi, chain = 'deterministic', transition = No
             Y.append(np.random.choice(n, p= dist))
 
         return Y, transition_matrix
+    
+    if chain == 'dobrushin':
+        
+        q = t = n/2
+        simga_q = 0
+        # we take xi = sigma_t/t \in {1, 1.5, 2}
+        sigma_t = xi * t
+
+        #as a technicality, we select the following +/-t 
+        t_pos = np.ceil((n-1)/2)
+        t_neg = np.floor((1-n)/2)
+
+
+        X.append(0)
+        for r in range(1, n_samples):
+            X.append(min(max(np.random.normal(X[-1], sigma_t), t_neg), t_pos))
+            Y.append(int(X[-1] + t))
+        
+        return Y, 0
 
 def create_pairs(X, S_n, N, K_tilde):
     x = []
@@ -333,6 +356,8 @@ def visualize(mu_arr, y_labels, RESULTS_PATH, name):
     plt.savefig(os.path.join(RESULTS_PATH, filename))
     plt.close()
 
+    return loss_after
+
 
 # PARAMETERS
 
@@ -342,7 +367,7 @@ l = 9       # probability measure quantizations
 
 n = 5       # state space quantizations
 
-m = 3       # action space quantization 
+m = 2       # action space quantization 
 
 N = 2       # length of prompt/order of markov chain 
 
@@ -354,12 +379,15 @@ beta = 0.3  # attention temperature
 
 LOSS = 'Cross Entropy'
 
+CHAIN = "dobrushin"
+
 
 #STATE
 
 # S is the interval [0, 5]
 S = (-2.5, 2.5)
 #d = 1
+
 
 #QUANTIZERS
 
@@ -377,7 +405,7 @@ U_m = Action((1, 1), (-2, 2), (-2 , 2), (1,1), (-2,2), (-2, 2), m = m)
 
 def train(xi):
     #construct dataset
-    X, transition = generate_process(n, K_tilde,  N , xi)
+    X, transition = generate_process(n, K_tilde,  N , xi, chain = CHAIN)
     x, y_tilde = create_pairs(X, S_n, N, K_tilde)
 
     #lift and dedup the dataset 
@@ -419,7 +447,7 @@ def train(xi):
 
 # TESTING
 def test(U_t, xi, transition):
-    X_test, _ = generate_process(n, K_tilde, N, xi, transition=transition)
+    X_test, _ = generate_process(n, K_tilde, N, xi, transition=transition, chain = CHAIN)
     x_test, y_tilde_test = create_pairs(X_test, S_n, N, K_tilde)
     mu_0_test, y_test = construct_empirical_distribution(x_test, y_tilde_test, N, S_n)
 
@@ -433,11 +461,26 @@ def test(U_t, xi, transition):
 
     return mu_test, y_test
 
+
 if __name__ == "__main__":
-    for xi in {0.01, 0.5, 1.0}:
+
+    markovian_xi = [0.01, 0.5, 1.0]
+    stability_xi = [1.0, 1.5, 2.0]
+    
+    #alter this
+    selected_xi = stability_xi
+
+    losses = []
+
+    for xi in selected_xi:
         actions, mu, y, transition = train(xi)
         visualize(mu, y, r"C:\Users\jakef\Projects\next-token-prediction-control\results", name = "train" + str(xi))
         mu_test, y_test = test(actions, xi, transition)
-        visualize(mu_test, y_test, r"C:\Users\jakef\Projects\next-token-prediction-control\results", "test" + str(xi))
+        loss = visualize(mu_test, y_test, r"C:\Users\jakef\Projects\next-token-prediction-control\results", "test" + str(xi))
+    
+        losses.append(loss)
 
+    plt.plot(selected_xi, losses)
+    plt.show()
+    print(losses, selected_xi)
 
