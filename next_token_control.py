@@ -147,6 +147,11 @@ def softmax(x):
     e = np.exp(x)
     return e / e.sum()
 
+def reflect(x, lo, hi):
+    T = 2 * (hi - lo)
+    y = (x - lo) % T
+    return lo + min(T - y, y)
+
 def C_T(mu_T, y, loss):
     K_local = len(y)
     total = 0
@@ -198,53 +203,60 @@ def ensemble_to_index(mu_t):
 
 # BEEFY FUNCTIONS
 
-def generate_process(n, K_tilde, N, xi, chain = 'deterministic', transition = None):
+def create_transition(n, N, chain = 'deterministic'):
+    if chain == 'deterministic':
+        transition_dict = np.zeros(n ** N, dtype=int)
+        for i in range(n ** N):
+            transition_dict[i] = np.random.randint(0, n)
+        return transition_dict
+
+    if chain == 'probabilistic':
+        transition_matrix = np.random.rand(N * n, n)
+
+        clustering_constant = 1000
+        transition_matrix = transition_matrix ** clustering_constant
+
+        for i in range(N * n):
+            transition_matrix[i] /= np.sum(transition_matrix[i])
+        return transition_matrix
+
+    if chain == 'dobrushin':
+        return None
+
+def generate_process(n, K_tilde, N, xi, transition, chain = 'deterministic'):
     #generates a process of indices (for the states)
     X = []
     V = []
     Y = []
     n_samples = K_tilde + N - 1
-    
+
     if chain == 'deterministic':
-        
-        if transition is None:
-            transition_dict = np.zeros(n ** N, dtype=int)
-            for i in range(n ** N):
-                transition_dict[i] = np.random.randint(0, n)
-        else: 
-            transition_dict = transition
+
+        transition_dict = transition
 
         for r in range(N):
             X.append(0)
             V.append(int(np.random.normal(0, scale = (1-xi)*n)))
-            Y.append(int(max(min(X[r]+V[r], n-1), 0)))
-                    
+            Y.append(int(reflect(X[r]+V[r], 0, n-1)))
+
+
         for r in range(N, n_samples):
             idx = int(n * X[r-2] + X[r-1])
             X.append(transition_dict[idx])
             V.append(int(np.random.normal(0, scale = (1 - xi)*n)))
-            Y.append(int(max(min(X[r]+V[r], n-1), 0)))
-        
-        return Y, transition_dict
+            Y.append(int(reflect(X[r]+V[r], 0, n-1)))
+
+        return Y
 
     if chain == 'probabilistic':
 
-        if transition is None:
-            transition_matrix = np.random.rand(N * n, n)
-
-            clustering_constant = 1000
-            transition_matrix = transition_matrix ** clustering_constant
-
-            for i in range(N * n):
-                transition_matrix[i] /= np.sum(transition_matrix[i])
-        else:
-            transition_matrix = transition
+        transition_matrix = transition
 
         for r in range(N):
             X.append(one_hot(0, n))
             V.append(np.ones(n)/n)
 
-        for r in range(N, n_samples): 
+        for r in range(N, n_samples):
             X.append(np.concatenate(X[-N:])/N @ transition_matrix) #Markovian
             V.append(np.ones(n)/n) #uniform non-Markovian
 
@@ -253,26 +265,27 @@ def generate_process(n, K_tilde, N, xi, chain = 'deterministic', transition = No
             dist /= np.sum(dist)
             Y.append(np.random.choice(n, p= dist))
 
-        return Y, transition_matrix
-    
+        return Y
+
     if chain == 'dobrushin':
-        
+
         q = t = n/2
         simga_q = 0
         # we take xi = sigma_t/t \in {1, 1.5, 2}
         sigma_t = xi * t
 
-        #as a technicality, we select the following +/-t 
+        #as a technicality, we select the following +/-t
         t_pos = np.ceil((n-1)/2)
         t_neg = np.floor((1-n)/2)
 
 
         X.append(0)
+        Y.append(int(X[-1] + t))
         for r in range(1, n_samples):
-            X.append(min(max(np.random.normal(X[-1], sigma_t), t_neg), t_pos))
+            X.append(reflect(np.random.normal(X[-1], sigma_t), t_neg, t_pos))
             Y.append(int(X[-1] + t))
-        
-        return Y, 0
+
+        return Y
 
 def create_pairs(X, S_n, N, K_tilde):
     x = []
@@ -367,9 +380,9 @@ l = 9       # probability measure quantizations
 
 n = 5       # state space quantizations
 
-m = 2       # action space quantization 
+m = 6       # action space quantization 
 
-N = 2       # length of prompt/order of markov chain 
+N = 1       # length of prompt/order of markov chain 
 
 K_tilde = 98 #number of training pairs (state labels) 
 
@@ -403,9 +416,9 @@ U_m = Action((1, 1), (-2, 2), (-2 , 2), (1,1), (-2,2), (-2, 2), m = m)
 
 # TRANSFORMER TRAINING
 
-def train(xi):
+def train(xi, transition):
     #construct dataset
-    X, transition = generate_process(n, K_tilde,  N , xi, chain = CHAIN)
+    X = generate_process(n, K_tilde, N, xi, transition, chain = CHAIN)
     x, y_tilde = create_pairs(X, S_n, N, K_tilde)
 
     #lift and dedup the dataset 
@@ -442,12 +455,12 @@ def train(xi):
         mu[t + 1] = phi(optimal_u, mu[t])
         U_t.append(optimal_u)
     
-    return U_t, mu, y, transition
+    return U_t, mu, y
 
 
 # TESTING
 def test(U_t, xi, transition):
-    X_test, _ = generate_process(n, K_tilde, N, xi, transition=transition, chain = CHAIN)
+    X_test = generate_process(n, K_tilde, N, xi, transition, chain = CHAIN)
     x_test, y_tilde_test = create_pairs(X_test, S_n, N, K_tilde)
     mu_0_test, y_test = construct_empirical_distribution(x_test, y_tilde_test, N, S_n)
 
@@ -465,22 +478,31 @@ def test(U_t, xi, transition):
 if __name__ == "__main__":
 
     markovian_xi = [0.01, 0.5, 1.0]
-    stability_xi = [1.0, 1.5, 2.0]
+    stability_xi = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
     
-    #alter this
-    selected_xi = stability_xi
+    if CHAIN == "dobrushin":
+        xi_values = stability_xi
+    else:
+        xi_values = markovian_xi
 
     losses = []
+    num_trials = 3
+    transition = create_transition(n, N, chain = CHAIN)
 
-    for xi in selected_xi:
-        actions, mu, y, transition = train(xi)
-        visualize(mu, y, r"C:\Users\jakef\Projects\next-token-prediction-control\results", name = "train" + str(xi))
-        mu_test, y_test = test(actions, xi, transition)
-        loss = visualize(mu_test, y_test, r"C:\Users\jakef\Projects\next-token-prediction-control\results", "test" + str(xi))
+    for xi in xi_values:
+        loss_sum = 0
+        for trial in range(num_trials):
+            actions, mu, y = train(xi, transition)
+            visualize(mu, y, r"C:\Users\jakef\Projects\next-token-prediction-control\results", name = "train" + str(xi) + "-trial" + str(trial))
+            mu_test, y_test = test(actions, xi, transition)
+            loss = visualize(mu_test, y_test, r"C:\Users\jakef\Projects\next-token-prediction-control\results", "test" + str(xi) + "-trial" + str(trial))
+
+            loss_sum += loss
+
+        losses.append(loss_sum / num_trials)
     
-        losses.append(loss)
-
-    plt.plot(selected_xi, losses)
+    print(losses, xi_values)
+    plt.plot(xi_values, losses)
+    plt.xlabel("xi value")
+    plt.ylabel("Loss")
     plt.show()
-    print(losses, selected_xi)
-
