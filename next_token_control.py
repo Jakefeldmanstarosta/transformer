@@ -278,12 +278,12 @@ def generate_process(n, K_tilde, N, xi, transition, chain = 'deterministic'):
         t_pos = np.ceil((n-1)/2)
         t_neg = np.floor((1-n)/2)
 
-
         X.append(0)
-        Y.append(int(X[-1] + t))
+        Y.append(int(min(max(X[-1] + t, 0), n - 1)))
         for r in range(1, n_samples):
-            X.append(reflect(np.random.normal(X[-1], sigma_t), t_neg, t_pos))
-            Y.append(int(X[-1] + t))
+            # X.append(reflect(np.random.normal(X[-1], sigma_t), t_neg, t_pos))
+            X.append(min(max(X[-1], t_neg), t_pos) + np.random.normal(0, sigma_t))
+            Y.append(int(min(max(X[-1] + t, 0), n - 1)))
 
         return Y
 
