@@ -150,9 +150,16 @@ if __name__ == "__main__":
         loss_sum = 0
         for trial in range(num_trials):
             actions, mu, y = train(xi, transition)
-            visualize(mu, y, RESULTS_PATH, name = "train" + str(xi) + "-trial" + str(trial))
+            train_name = "train" + str(xi) + "-trial" + str(trial)
+            train_loss = C_T(mu[T], y, LOSS)
+            plot_state_predictions(mu, y, RESULTS_PATH, train_name)
+            plot_promptwise_loss(mu, y, train_loss, RESULTS_PATH, train_name)
+
             mu_test, y_test = test(actions, xi, transition)
-            loss = visualize(mu_test, y_test, RESULTS_PATH, "test" + str(xi) + "-trial" + str(trial))
+            test_name = "test" + str(xi) + "-trial" + str(trial)
+            loss = C_T(mu_test[T], y_test, LOSS)
+            plot_state_predictions(mu_test, y_test, RESULTS_PATH, test_name)
+            plot_promptwise_loss(mu_test, y_test, loss, RESULTS_PATH, test_name)
 
             loss_sum += loss
 

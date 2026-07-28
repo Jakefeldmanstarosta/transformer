@@ -1,4 +1,5 @@
 import os
+from math import erf, sqrt
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -14,40 +15,66 @@ RESULTS_PATH = r"C:\Users\jakef\Projects\next-token-prediction-control\results\s
 os.makedirs(RESULTS_PATH, exist_ok=True)
 
 
+K = {0: [[0, 0, 1], [1/2, 1/2, 0], [1/3, 1/3, 1/3]],
+     1/3: [[0, 1/3, 2/3], [1/2, 1/2, 0], [1/3, 1/3, 1/3]],
+     1/2: [[1/4, 1/4, 1/2], [1/2, 1/2, 0], [1/3, 1/3, 1/3]],
+     2/3: [[1/3, 1/3, 1/3], [1/2, 1/2, 0], [1/3, 1/3, 1/3]],
+     1: [[1/3, 1/3, 1/3], [1/3, 1/3, 1/3], [1/3, 1/3, 1/3]]}
+
+
 def create_transition(n, N, chain = CHAIN):
     return None
 
 
-def generate_process(n, K_tilde, N, xi, transition, chain = CHAIN):
+def delta_T(xi):
+    # delta(T) = 2 * Phi(-t/sigma_t) = 1-erf(1/(xi*sqrt(2))), since sigma_t = xi * t
+    if xi == 0:
+        return 0.0
+    return 1 - erf(1 / (xi * sqrt(2)))
+
+
+def plot_loss_grid(delta_T_values, delta_K_values, grid):
+    nx = len(delta_T_values)
+    ny = len(delta_K_values)
+
+    plt.pcolormesh(np.arange(nx + 1), np.arange(ny + 1), grid)
+    for i in range(ny):
+        for j in range(nx):
+            plt.text(j + 0.5, i + 0.5, f"{grid[i, j]:.2f}", ha='center', va='center')
+
+    plt.xticks(np.arange(nx) + 0.5, [f"{v:.2f}" for v in delta_T_values])
+    plt.yticks(np.arange(ny) + 0.5, [f"{v:.2f}" for v in delta_K_values])
+    plt.xlabel("delta(T)")
+    plt.ylabel("delta(K)")
+    plt.show()
+
+
+def generate_process(n, K_tilde, N, xi, transition, kernel, chain = CHAIN):
     #generates a process of indices (for the states)
     X = []
     Y = []
     n_samples = K_tilde + N - 1
 
-    q = t = n/2
-    simga_q = 0
-    # we take xi = sigma_t/t \in {1, 1.5, 2}
+    t = S[1]  # bound of the state space, f(X) clips into [-t, t]
     sigma_t = xi * t
 
-    #as a technicality, we select the following +/-t
-    t_pos = np.ceil((n-1)/2)
-    t_neg = np.floor((1-n)/2)
-
-    X.append(0)
-    Y.append(int(min(max(X[-1] + t, 0), n - 1)))
+    X.append(0.0)
     for r in range(1, n_samples):
-        # X.append(reflect(np.random.normal(X[-1], sigma_t), t_neg, t_pos))
-        X.append(min(max(X[-1], t_neg), t_pos) + np.random.normal(0, sigma_t))
-        Y.append(int(min(max(X[-1] + t, 0), n - 1)))
+        # f(X_{t-1}) = clip(X_{t-1}, -t, t)
+        X.append(min(max(X[-1], -t), t) + np.random.normal(0, sigma_t))
+
+    for r in range(n_samples):
+        row = np.where(S_n == Q_n(X[r], S_n))[0][0]
+        Y.append(int(np.random.choice(n, p = kernel[row])))
 
     return Y
 
 
 # TRANSFORMER TRAINING
 
-def train(xi, transition):
+def train(xi, transition, kernel):
     #construct dataset
-    X = generate_process(n, K_tilde, N, xi, transition, chain = CHAIN)
+    X = generate_process(n, K_tilde, N, xi, transition, kernel, chain = CHAIN)
     x, y_tilde = create_pairs(X, S_n, N, K_tilde)
 
     #lift and dedup the dataset
@@ -88,8 +115,8 @@ def train(xi, transition):
 
 
 # TESTING
-def test(U_t, xi, transition):
-    X_test = generate_process(n, K_tilde, N, xi, transition, chain = CHAIN)
+def test(U_t, xi, transition, kernel):
+    X_test = generate_process(n, K_tilde, N, xi, transition, kernel, chain = CHAIN)
     x_test, y_tilde_test = create_pairs(X_test, S_n, N, K_tilde)
     mu_0_test, y_test = construct_empirical_distribution(x_test, y_tilde_test, N, S_n)
 
@@ -106,26 +133,40 @@ def test(U_t, xi, transition):
 
 if __name__ == "__main__":
 
-    xi_values = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
+    xi_values = [0.0, 0.5, 1.0, 1.5, 2.0]
 
-    losses = []
     num_trials = 3
     transition = create_transition(n, N, chain = CHAIN)
 
-    for xi in xi_values:
-        loss_sum = 0
-        for trial in range(num_trials):
-            actions, mu, y = train(xi, transition)
-            visualize(mu, y, RESULTS_PATH, name = "train" + str(xi) + "-trial" + str(trial))
-            mu_test, y_test = test(actions, xi, transition)
-            loss = visualize(mu_test, y_test, RESULTS_PATH, "test" + str(xi) + "-trial" + str(trial))
+    losses = {}  # coefficient: losses per xi
 
-            loss_sum += loss
+    for coeff, matrix in K.items():
+        kernel = np.array(matrix)
+        losses[coeff] = []
 
-        losses.append(loss_sum / num_trials)
+        for xi in xi_values:
+            loss_sum = 0
+            for trial in range(num_trials):
+                actions, mu, y = train(xi, transition, kernel)
+                train_name = f"train-K{coeff:.4g}-xi{xi}-trial{trial}"
+                train_loss = C_T(mu[T], y, LOSS)
+                #plot_state_predictions(mu, y, RESULTS_PATH, train_name)
+                #plot_promptwise_loss(mu, y, train_loss, RESULTS_PATH, train_name)
+
+                mu_test, y_test = test(actions, xi, transition, kernel)
+                test_name = f"test-K{coeff:.4g}-xi{xi}-trial{trial}"
+                loss = C_T(mu_test[T], y_test, LOSS)
+                #plot_state_predictions(mu_test, y_test, RESULTS_PATH, test_name)
+                #plot_promptwise_loss(mu_test, y_test, loss, RESULTS_PATH, test_name)
+
+                loss_sum += loss
+
+            losses[coeff].append(loss_sum / num_trials)
 
     print(losses, xi_values)
-    plt.plot(xi_values, losses)
-    plt.xlabel("xi value")
-    plt.ylabel("Loss")
-    plt.show()
+
+    delta_T_values = [delta_T(xi) for xi in xi_values]
+    delta_K_values = list(K.keys())
+    grid = np.array([losses[c] for c in K])
+
+    plot_loss_grid(delta_T_values, delta_K_values, grid)

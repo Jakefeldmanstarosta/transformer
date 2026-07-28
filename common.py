@@ -248,19 +248,17 @@ def construct_empirical_distribution(x, y_tilde, N, S_n):
 
 # VISUALIZATION
 
-def visualize(mu_arr, y_labels, RESULTS_PATH, name):
-    #first figure
+def plot_state_predictions(mu_arr, y_labels, RESULTS_PATH, name):
     filename = name + "-1.png"
     predicted = top_measure_to_state(mu_arr[T])[:, -1]
     label_states, label_probs = measure_to_state(np.array(y_labels))
 
-    plt.plot(predicted, 's', label=f'after', color='orange')
+    plt.plot(predicted, 's', label='after', color='orange')
     K_viz = len(y_labels)
     for k in range(K_viz):
         xs = np.full(len(label_states[k]), k)
         plt.scatter(xs, label_states[k], s=np.array(label_probs[k]) * 300,
                     color='C0', alpha=0.6, label='label' if k == 0 else None)
-
 
     plt.xlabel(r"$\mathcal{K}$ index")
     plt.ylabel("State")
@@ -268,24 +266,20 @@ def visualize(mu_arr, y_labels, RESULTS_PATH, name):
     plt.savefig(os.path.join(RESULTS_PATH, filename))
     plt.close()
 
-    #second figure
-    filename = name + "-2.png"
 
-    loss_before = C_T(mu_arr[0], y_labels, LOSS)
-    loss_after = C_T(mu_arr[T], y_labels, LOSS)
-    promptwise_loss_before = [cross_entropy(mu_arr[0][k][-1], y_labels[k]) for k in range(K_viz)]
+def plot_promptwise_loss(mu_arr, y_labels, loss_after, RESULTS_PATH, name):
+    filename = name + "-2.png"
+    K_viz = len(y_labels)
     promptwise_loss_after = [cross_entropy(mu_arr[T][k][-1], y_labels[k]) for k in range(K_viz)]
 
-    #plt.fill_between(np.arange(K_viz), promptwise_loss_before, alpha=0.25, label=f'before (loss = {loss_before:.2f})', color='blue')
-    plt.fill_between(np.arange(K_viz), promptwise_loss_after, alpha=0.25, label=f'after (loss = {loss_after:.2f})', color='orange')
+    plt.fill_between(np.arange(K_viz), promptwise_loss_after, alpha=0.25,
+                      label=f'after (loss = {loss_after:.2f})', color='orange')
 
     plt.xlabel(r"$\mathcal{K}$ index")
     plt.ylabel("Prompt-level loss between predicted and actual labels")
     plt.legend()
     plt.savefig(os.path.join(RESULTS_PATH, filename))
     plt.close()
-
-    return loss_after
 
 
 # PARAMETERS
@@ -294,9 +288,9 @@ T = 2       # time horizon = number of layers
 
 l = 9       # probability measure quantizations
 
-n = 5       # state space quantizations
+n = 3       # state space quantizations
 
-m = 3       # action space quantization
+m = 4       # action space quantization
 
 N = 1       # length of prompt/order of markov chain
 
