@@ -59,7 +59,7 @@ def cross_entropy(p, q):
 # ACTIONS
 
 class Action:
-    def __init__(self, W, A, b, Q, K, V, m = None):
+    def __init__(self, W, A, b, Q, K, V, E, m = None):
         if m is not None:
             W = np.unique(np.linspace(*W, m))
             A = np.unique(np.linspace(*A, m))
@@ -67,24 +67,29 @@ class Action:
             Q = np.unique(np.linspace(*Q, m))
             K = np.unique(np.linspace(*K, m))
             V = np.unique(np.linspace(*V, m))
+            E = np.unique(np.linspace(*E, m))
         self.W = W
         self.A = A
         self.b = b
         self.Q = Q
         self.K = K
         self.V = V
+        self.E = E
 
     def __repr__(self):
-        return f"W={self.W}, A={self.A}, b={self.b}, Q={self.Q}, K={self.K}, V={self.V}"
+        return f"W={self.W}, A={self.A}, b={self.b}, Q={self.Q}, K={self.K}, V={self.V}, E = {self.E}"
 
 def create_actions(U):
+    E_possible = np.array(np.meshgrid(*[U.E] * n)).T.reshape(-1, n)
     for w_i in U.W:
         for a_i in U.A:
             for b_i in U.b:
                 for q_i in U.Q:
                     for k_i in U.K:
                         for v_i in U.V:
-                            yield Action(w_i, a_i, b_i, q_i, k_i, v_i)
+                            for e_flat in E_possible:
+                                e_i = e_flat.reshape(1, n)
+                                yield Action(w_i, a_i, b_i, q_i, k_i, v_i, e_i)
 
 
 # TRANSITIONS
@@ -147,17 +152,21 @@ def softmax(x):
     e = np.exp(x)
     return e / e.sum()
 
+def r(x, u):
+    return softmax(u.E.flatten() * x)
+
 def reflect(x, lo, hi):
     T = 2 * (hi - lo)
     y = (x - lo) % T
     return lo + min(T - y, y)
 
-def C_T(mu_T, y, loss):
+def C_T(mu_T, y, loss, u = None):
     K_local = len(y)
     total = 0
     for k in range(K_local):
         if loss == 'CE' or loss == 'Cross Entropy':
-            total += cross_entropy(mu_T[k][N-1], y[k])
+            x_T_k = top_measure_to_state(mu_T[k][N-1])
+            total += cross_entropy(r(x_T_k, u), y[k])
         if loss == 'W2' or loss == 'Wasserstein':
             total += W2(mu_T[k][N-1], y[k])
     return total / K_local
@@ -246,6 +255,68 @@ def construct_empirical_distribution(x, y_tilde, N, S_n):
     return np.array(mu_0), y
 
 
+# TRAINING & TESTING
+
+def train(generate_process, chain, *process_args):
+    #construct dataset
+    X = generate_process(n, K_tilde, N, *process_args, chain = chain)
+    x, y_tilde = create_pairs(X, S_n, N, K_tilde)
+
+    #lift and dedup the dataset
+    mu_0, y = construct_empirical_distribution(x, y_tilde, N, S_n)
+    mu = np.zeros((T + 1, *mu_0.shape))
+    mu[0] = mu_0
+
+    #define terminal cost
+    C = {}
+    for t in range(T+1):
+        C[t] = {}
+    #for i, mu_T in enumerate(create_reachable_ensembles(mu[0], target_depth=T)):
+    #    C[T][ensemble_to_index(mu_T)] = C_T(mu_T, y, LOSS)
+
+    gamma = {}
+    for t in range(T):
+        gamma[t] = {}
+    actions = list(create_actions(U_m))
+
+    #solve dp
+    for t in range(T-1, -1, -1): #goes from T-1 to 0
+        for mu_t in create_reachable_ensembles(mu[0], target_depth=t):
+            i = ensemble_to_index(mu_t)
+            if t == T-1:
+                costs = [C_T(phi(u, mu_t), y, LOSS, u) for u in actions] #terminal costs indexed by each action
+            else:
+                costs = [C[t+1][ensemble_to_index(phi(u, mu_t))] for u in actions] #costs indexed by each action
+            best_idx = np.argmin(costs)
+            gamma[t][i] = actions[best_idx]
+            C[t][i] = np.min(costs)
+
+    #forward pass
+    U_t = []
+    for t in range(T):
+        optimal_u = gamma[t][ensemble_to_index(mu[t])]
+        mu[t + 1] = phi(optimal_u, mu[t])
+        U_t.append(optimal_u)
+
+    return U_t, mu, y
+
+
+def test(U_t, generate_process, chain, *process_args):
+    X_test = generate_process(n, K_tilde, N, *process_args, chain = chain)
+    x_test, y_tilde_test = create_pairs(X_test, S_n, N, K_tilde)
+    mu_0_test, y_test = construct_empirical_distribution(x_test, y_tilde_test, N, S_n)
+
+    mu_0_test = np.array(mu_0_test)
+    mu_test = np.zeros((T + 1, *mu_0_test.shape))
+    mu_test[0] = mu_0_test
+
+    #Forward pass
+    for t in range(T):
+        mu_test[t + 1] = phi(U_t[t], mu_test[t])
+
+    return mu_test, y_test
+
+
 # VISUALIZATION
 
 def plot_state_predictions(mu_arr, y_labels, RESULTS_PATH, name):
@@ -290,9 +361,10 @@ l = 9       # probability measure quantizations
 
 n = 3       # state space quantizations
 
-m = 4       # action space quantization
+m = 2       # action space quantization
+#6 took too long overnight (9 hours), (7/25), try 5
 
-N = 1       # length of prompt/order of markov chain
+N = 2       # length of prompt/order of markov chain
 
 K_tilde = 98 #number of training pairs (state labels)
 
@@ -317,4 +389,5 @@ S_n = np.linspace(*S, n)
 cost_matrix = np.array([[np.linalg.norm(s1 - s2)**2 for s1 in S_n] for s2 in S_n])
 
 P_l = {i/(l -1) for i in range(0, l)}
-U_m = Action((1, 1), (-2, 2), (-2 , 2), (1,1), (-2,2), (-2, 2), m = m)
+#U_m = Action((-1.5, 1.5), (-1.5, 1.5), (-1.5, 1.5), (1, 1), (1, 1), (-1.5, 1.5), m = m)
+U_m = Action((-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5), (1, 1), (-2.5, 2.5), (-2.5, 2.5), m = m)

@@ -77,67 +77,6 @@ def generate_process(n, K_tilde, N, xi, transition, chain = CHAIN):
         return Y
 
 
-# TRANSFORMER TRAINING
-
-def train(xi, transition):
-    #construct dataset
-    X = generate_process(n, K_tilde, N, xi, transition, chain = CHAIN)
-    x, y_tilde = create_pairs(X, S_n, N, K_tilde)
-
-    #lift and dedup the dataset
-    mu_0, y = construct_empirical_distribution(x, y_tilde, N, S_n)
-    mu = np.zeros((T + 1, *mu_0.shape))
-    mu[0] = mu_0
-
-    #define terminal cost
-    C = {}
-    for t in range(T+1):
-        C[t] = {}
-    for i, mu_T in enumerate(create_reachable_ensembles(mu[0], target_depth=T)):
-        C[T][ensemble_to_index(mu_T)] = C_T(mu_T, y, LOSS)
-
-    gamma = {}
-    for t in range(T):
-        gamma[t] = {}
-    actions = list(create_actions(U_m))
-
-    #solve dp
-    for t in range(T-1, -1, -1): #goes from T-1 to 0
-        for mu_t in create_reachable_ensembles(mu[0], target_depth=t):
-
-            i = ensemble_to_index(mu_t)
-            costs = [C[t+1][ensemble_to_index(phi(u, mu_t))] for u in actions] #costs indexed by each action
-            best_idx = np.argmin(costs)
-            gamma[t][i] = actions[best_idx]
-            C[t][i] = np.min(costs)
-
-    #forward pass
-    U_t = []
-    for t in range(T):
-        optimal_u = gamma[t][ensemble_to_index(mu[t])]
-        mu[t + 1] = phi(optimal_u, mu[t])
-        U_t.append(optimal_u)
-
-    return U_t, mu, y
-
-
-# TESTING
-def test(U_t, xi, transition):
-    X_test = generate_process(n, K_tilde, N, xi, transition, chain = CHAIN)
-    x_test, y_tilde_test = create_pairs(X_test, S_n, N, K_tilde)
-    mu_0_test, y_test = construct_empirical_distribution(x_test, y_tilde_test, N, S_n)
-
-    mu_0_test = np.array(mu_0_test)
-    mu_test = np.zeros((T + 1, *mu_0_test.shape))
-    mu_test[0] = mu_0_test
-
-    #Forward pass
-    for t in range(T):
-        mu_test[t + 1] = phi(U_t[t], mu_test[t])
-
-    return mu_test, y_test
-
-
 if __name__ == "__main__":
 
     xi_values = [0.01, 0.25, 0.5, 0.75, 1.0]  # 0 = non-Markovian, 1 = Markovian
@@ -149,15 +88,15 @@ if __name__ == "__main__":
     for xi in xi_values:
         loss_sum = 0
         for trial in range(num_trials):
-            actions, mu, y = train(xi, transition)
+            actions, mu, y = train(generate_process, CHAIN, xi, transition)
             train_name = "train" + str(xi) + "-trial" + str(trial)
-            train_loss = C_T(mu[T], y, LOSS)
+            train_loss = C_T(mu[T], y, LOSS, actions[-1])
             plot_state_predictions(mu, y, RESULTS_PATH, train_name)
             plot_promptwise_loss(mu, y, train_loss, RESULTS_PATH, train_name)
 
-            mu_test, y_test = test(actions, xi, transition)
+            mu_test, y_test = test(actions, generate_process, CHAIN, xi, transition)
             test_name = "test" + str(xi) + "-trial" + str(trial)
-            loss = C_T(mu_test[T], y_test, LOSS)
+            loss = C_T(mu_test[T], y_test, LOSS, actions[-1])
             plot_state_predictions(mu_test, y_test, RESULTS_PATH, test_name)
             plot_promptwise_loss(mu_test, y_test, loss, RESULTS_PATH, test_name)
 
