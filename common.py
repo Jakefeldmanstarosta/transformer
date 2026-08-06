@@ -80,15 +80,13 @@ class Action:
         return f"W={self.W}, A={self.A}, b={self.b}, Q={self.Q}, K={self.K}, V={self.V}, E = {self.E}"
 
 def create_actions(U):
-    E_possible = np.array(np.meshgrid(*[U.E] * n)).T.reshape(-1, n)
     for w_i in U.W:
         for a_i in U.A:
             for b_i in U.b:
                 for q_i in U.Q:
                     for k_i in U.K:
                         for v_i in U.V:
-                            for e_flat in E_possible:
-                                e_i = e_flat.reshape(1, n)
+                            for e_i in U.E:
                                 yield Action(w_i, a_i, b_i, q_i, k_i, v_i, e_i)
 
 
@@ -153,7 +151,8 @@ def softmax(x):
     return e / e.sum()
 
 def r(x, u):
-    return softmax(u.E.flatten() * x)
+    E_u = np.eye(n) * u.E
+    return softmax(E_u @ x)
 
 def reflect(x, lo, hi):
     T = 2 * (hi - lo)
@@ -165,8 +164,10 @@ def C_T(mu_T, y, loss, u = None):
     total = 0
     for k in range(K_local):
         if loss == 'CE' or loss == 'Cross Entropy':
-            x_T_k = top_measure_to_state(mu_T[k][N-1])
+            x_T_k = mu_T[k][N-1]
             total += cross_entropy(r(x_T_k, u), y[k])
+            # x_T_k = mu_T[k][N-1]
+            # total += cross_entropy(x_T_k, y[k])
         if loss == 'W2' or loss == 'Wasserstein':
             total += W2(mu_T[k][N-1], y[k])
     return total / K_local
@@ -361,8 +362,8 @@ l = 9       # probability measure quantizations
 
 n = 3       # state space quantizations
 
-m = 2       # action space quantization
-#6 took too long overnight (9 hours), (7/25), try 5
+m = 6       # action space quantization
+#6 took 9 hours (7/25)
 
 N = 2       # length of prompt/order of markov chain
 
@@ -390,4 +391,4 @@ cost_matrix = np.array([[np.linalg.norm(s1 - s2)**2 for s1 in S_n] for s2 in S_n
 
 P_l = {i/(l -1) for i in range(0, l)}
 #U_m = Action((-1.5, 1.5), (-1.5, 1.5), (-1.5, 1.5), (1, 1), (1, 1), (-1.5, 1.5), m = m)
-U_m = Action((-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5), (1, 1), (-2.5, 2.5), (-2.5, 2.5), m = m)
+U_m = Action((-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5), (1, 1), (-2.5, 2.5), (0,5), m = m)

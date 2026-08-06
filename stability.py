@@ -63,7 +63,7 @@ def generate_process(n, K_tilde, N, transition_kernel, observation_kernel, chain
 
 if __name__ == "__main__":
 
-    num_trials = 1
+    num_trials = 3
 
     losses = {}  # (t_coeff, q_coeff) -> avg loss
 
