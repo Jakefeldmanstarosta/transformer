@@ -4,44 +4,24 @@ import matplotlib.pyplot as plt
 
 from common import *
 
-# finite state/measurement models (deterministic or probabilistic transition
-# kernels over the quantized state space). No continuous state -> no
-# quantization error, so xi's effect on Markovianness shows up cleanly.
-
-CHAIN = "probabilistic"
-
 RESULTS_PATH = r"C:\Users\jakef\Projects\next-token-prediction-control\results\markovianness"
 os.makedirs(RESULTS_PATH, exist_ok=True)
 
-
-def create_transition(n, N, chain = CHAIN):
-    if chain == 'deterministic':
-        transition_dict = np.zeros(n ** N, dtype=int)
-        for i in range(n ** N):
-            transition_dict[i] = np.random.randint(0, n)
-        return transition_dict
-
-    if chain == 'probabilistic':
-        transition_matrix = np.random.rand(N * n, n)
-
-        clustering_constant = 1000
-        transition_matrix = transition_matrix ** clustering_constant
-
-        for i in range(N * n):
-            transition_matrix[i] /= np.sum(transition_matrix[i])
-        return transition_matrix
-
-
-def generate_process(n, K_tilde, N, xi, transition, chain = CHAIN):
+def generate_pairs(n, K_tilde, N, xi, chain, mode):
     #generates a process of indices (for the states)
     X = []
     V = []
     Y = []
     n_samples = K_tilde + N - 1
+    #prediction requires one extra sample
+    if mode == "predict":
+        n_samples += 1
+
 
     if chain == 'deterministic':
-
-        transition_dict = transition
+        transition_dict = np.zeros(n ** N, dtype=int)
+        for i in range(n ** N):
+            transition_dict[i] = np.random.randint(0, n)
 
         for r in range(N):
             X.append(0)
@@ -55,11 +35,13 @@ def generate_process(n, K_tilde, N, xi, transition, chain = CHAIN):
             V.append(int(np.random.normal(0, scale = (1 - xi)*n)))
             Y.append(int(reflect(X[r]+V[r], 0, n-1)))
 
-        return Y
-
     if chain == 'probabilistic':
+        transition_matrix = np.random.rand(N * n, n)
+        clustering_constant = 1000
+        transition_matrix = transition_matrix ** clustering_constant
 
-        transition_matrix = transition
+        for i in range(N * n):
+            transition_matrix[i] /= np.sum(transition_matrix[i])
 
         for r in range(N):
             X.append(one_hot(0, n))
@@ -74,8 +56,19 @@ def generate_process(n, K_tilde, N, xi, transition, chain = CHAIN):
             dist /= np.sum(dist)
             Y.append(np.random.choice(n, p= dist))
 
-        return Y
+    x = []
+    y_tilde = []
+    for r in range(K_tilde):
+        x.append(Y[r: r+N])
+        if mode == "predict":
+            y_tilde.append(Y[r + N])
+        elif mode == "filter":
+            y_tilde.append(X[r + N - 1])
+        else:
+            print("Incorrect mode")
 
+    #D_tilde = list(zip(x, y_tilde))
+    return x, y_tilde
 
 if __name__ == "__main__":
 
@@ -83,18 +76,17 @@ if __name__ == "__main__":
 
     losses = []
     num_trials = 3
-    transition = create_transition(n, N, chain = CHAIN)
 
     for xi in xi_values:
         loss_sum = 0
         for trial in range(num_trials):
-            actions, mu, y = train(generate_process, CHAIN, xi, transition)
+            actions, mu, y = train(generate_pairs, xi)
             train_name = "train" + str(xi) + "-trial" + str(trial)
             train_loss = C_T(mu[T], y, LOSS, actions[-1])
             plot_state_predictions(mu, y, RESULTS_PATH, train_name)
             plot_promptwise_loss(mu, y, train_loss, RESULTS_PATH, train_name)
 
-            mu_test, y_test = test(actions, generate_process, CHAIN, xi, transition)
+            mu_test, y_test = test(actions, generate_pairs, xi)
             test_name = "test" + str(xi) + "-trial" + str(trial)
             loss = C_T(mu_test[T], y_test, LOSS, actions[-1])
             plot_state_predictions(mu_test, y_test, RESULTS_PATH, test_name)

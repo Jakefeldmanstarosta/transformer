@@ -212,19 +212,6 @@ def ensemble_to_index(mu_t):
 
 
 # DATASET CONSTRUCTION
-
-def create_pairs(X, S_n, N, K_tilde):
-    x = []
-    y_tilde = []
-
-    #start at index N
-    for r in range(K_tilde - N):
-        x.append(S_n[X[r:r+N]])
-        y_tilde.append(S_n[X[r + N]])
-
-    #D_tilde = list(zip(x, y_tilde))
-    return x, y_tilde
-
 def construct_empirical_distribution(x, y_tilde, N, S_n):
     #create empirical distributions, remove duplicates
     K_tilde = len(x)
@@ -253,15 +240,16 @@ def construct_empirical_distribution(x, y_tilde, N, S_n):
         denom = np.sum(y[k])
         y[k] /= denom
 
+
+    #D = list(zip(x, y))
     return np.array(mu_0), y
 
 
 # TRAINING & TESTING
 
-def train(generate_process, chain, *process_args):
+def train(generate_pairs, *process_args):
     #construct dataset
-    X = generate_process(n, K_tilde, N, *process_args, chain = chain)
-    x, y_tilde = create_pairs(X, S_n, N, K_tilde)
+    x, y_tilde = generate_pairs(n, K_tilde, N, *process_args, chain = CHAIN, mode = MODE)
 
     #lift and dedup the dataset
     mu_0, y = construct_empirical_distribution(x, y_tilde, N, S_n)
@@ -272,8 +260,6 @@ def train(generate_process, chain, *process_args):
     C = {}
     for t in range(T+1):
         C[t] = {}
-    #for i, mu_T in enumerate(create_reachable_ensembles(mu[0], target_depth=T)):
-    #    C[T][ensemble_to_index(mu_T)] = C_T(mu_T, y, LOSS)
 
     gamma = {}
     for t in range(T):
@@ -285,6 +271,7 @@ def train(generate_process, chain, *process_args):
         for mu_t in create_reachable_ensembles(mu[0], target_depth=t):
             i = ensemble_to_index(mu_t)
             if t == T-1:
+                #we compute terminal costs here, not before the loop
                 costs = [C_T(phi(u, mu_t), y, LOSS, u) for u in actions] #terminal costs indexed by each action
             else:
                 costs = [C[t+1][ensemble_to_index(phi(u, mu_t))] for u in actions] #costs indexed by each action
@@ -302,9 +289,8 @@ def train(generate_process, chain, *process_args):
     return U_t, mu, y
 
 
-def test(U_t, generate_process, chain, *process_args):
-    X_test = generate_process(n, K_tilde, N, *process_args, chain = chain)
-    x_test, y_tilde_test = create_pairs(X_test, S_n, N, K_tilde)
+def test(U_t, generate_pairs, *process_args):
+    x_test, y_tilde_test = generate_pairs(n, K_tilde, N, *process_args , mode = MODE, chain = CHAIN)
     mu_0_test, y_test = construct_empirical_distribution(x_test, y_tilde_test, N, S_n)
 
     mu_0_test = np.array(mu_0_test)
@@ -370,8 +356,15 @@ K_tilde = 98 #number of training pairs (state labels)
 
 beta = 0.3  # attention temperature
 
+#'Cross Entropy'/'CE' or 'Wasserstein'/'W2'
 LOSS = 'Cross Entropy'
 
+#'filter' or 'predict'
+MODE = 'filter'
+
+#for memory
+#'deterministic' or 'probabilistic'
+CHAIN = 'deterministic'
 
 #STATE
 
