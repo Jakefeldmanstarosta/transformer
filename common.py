@@ -362,8 +362,7 @@ l = 9       # probability measure quantizations
 
 n = 3       # state space quantizations
 
-m = 6       # action space quantization
-#6 took 9 hours (7/25)
+m = 2       # action space quantization
 
 N = 2       # length of prompt/order of markov chain
 
