@@ -159,15 +159,31 @@ def reflect(x, lo, hi):
     y = (x - lo) % T
     return lo + min(T - y, y)
 
+
+def action_to_dict(u):
+    def native(x):
+        if isinstance(x, np.ndarray):
+            return x.tolist()
+        if isinstance(x, np.generic):
+            return x.item()
+        return x
+    return {
+        "W": native(u.W),
+        "A": native(u.A),
+        "b": native(u.b),
+        "Q": native(u.Q),
+        "K": native(u.K),
+        "V": native(u.V),
+        "E": native(u.E)
+    }
+
 def C_T(mu_T, y, loss, u = None):
     K_local = len(y)
     total = 0
     for k in range(K_local):
         if loss == 'CE' or loss == 'Cross Entropy':
             x_T_k = mu_T[k][N-1]
-            total += cross_entropy(r(x_T_k, u), y[k])
-            # x_T_k = mu_T[k][N-1]
-            # total += cross_entropy(x_T_k, y[k])
+            total += cross_entropy(y[k], r(x_T_k, u))
         if loss == 'W2' or loss == 'Wasserstein':
             total += W2(mu_T[k][N-1], y[k])
     return total / K_local
@@ -220,8 +236,8 @@ def construct_empirical_distribution(x, y_tilde, N, S_n):
 
     for k in range(K_tilde):
 
-        candidate_x = np.array([dirac(Q_n(x[k][i], S_n)) for i in range(N)])
-        candidate_y = dirac(Q_n(y_tilde[k], S_n))
+        candidate_x = np.array([dirac(S_n[x[k][i]]) for i in range(N)])
+        candidate_y = dirac(S_n[y_tilde[k]])
 
         if k > 0:
             matches = np.all(np.all(np.array(mu_0) == candidate_x, axis = 2), axis=1)
@@ -348,7 +364,8 @@ l = 9       # probability measure quantizations
 
 n = 3       # state space quantizations
 
-m = 2       # action space quantization
+m = 5       # action space quantization
+#m = 5
 
 N = 2       # length of prompt/order of markov chain
 
