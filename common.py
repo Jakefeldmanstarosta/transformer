@@ -364,7 +364,7 @@ l = 9       # probability measure quantizations
 
 n = 3       # state space quantizations
 
-m = 5       # action space quantization
+m = 2       # action space quantization
 #m = 5
 
 N = 2       # length of prompt/order of markov chain
@@ -400,4 +400,12 @@ cost_matrix = np.array([[np.linalg.norm(s1 - s2)**2 for s1 in S_n] for s2 in S_n
 
 P_l = {i/(l -1) for i in range(0, l)}
 #U_m = Action((-1.5, 1.5), (-1.5, 1.5), (-1.5, 1.5), (1, 1), (1, 1), (-1.5, 1.5), m = m)
-U_m = Action((-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5), (1, 1), (-2.5, 2.5), (0,5), m = m)
+
+def set_action_quantization(m_new):
+    # rebuild the global U_m
+    global U_m, m
+    m = m_new
+    U_m = Action((-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5), (1, 1), (-2.5, 2.5), (0, 5), m = m_new)
+    return U_m
+
+set_action_quantization(m)

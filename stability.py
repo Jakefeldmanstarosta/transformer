@@ -24,7 +24,16 @@ def plot_loss_grid(delta_T_values, delta_Q_values, grid, PATH):
     plt.ylabel("delta(Q)")
     plt.savefig(os.path.join(PATH, "colour-gird.png"), bbox_inches='tight')
     plt.close()
-    
+
+
+def plot_loss_line(m_values, losses, PATH):
+    plt.plot(m_values, losses, marker='o')
+    plt.xlabel("m (actions quantization)")
+    plt.ylabel("test loss")
+    plt.savefig(os.path.join(PATH, "actions-line.png"), bbox_inches='tight')
+    plt.close()
+
+
 def generate_pairs(n, K_tilde, N, transition_kernel, observation_kernel, mode = "filter", **kwargs):
     # discrete state process X_{t+1} ~ T_kernel[X_t] and observation Y_t ~ Q_kernel[X_t]
     # mode == "filter": predict hidden state X_t from Y_[t - N + 1, t]
@@ -59,27 +68,12 @@ def generate_pairs(n, K_tilde, N, transition_kernel, observation_kernel, mode = 
     return x, y_tilde
     
 
-if __name__ == "__main__":
-    # Q_kernel = {0: [[0, 0, 1], [1/2, 1/2, 0], [1/2, 0, 1/2]],
-    #      1/6: [[0, 1/6, 5/6], [1/2, 1/2, 0], [1/2, 0, 1/2]],
-    #      1/3: [[0, 1/3, 2/3], [1/2, 1/2, 0], [1/2, 0, 1/2]],
-    #      1/2: [[1/4, 1/4, 1/2], [1/2, 1/2, 0], [1/2, 0, 1/2]],
-    #      2/3: [[1/3, 1/3, 1/3], [1/2, 1/2, 0], [1/3, 1/3, 1/3]],
-    #      1: [[1/3, 1/3, 1/3], [1/3, 1/3, 1/3], [1/3, 1/3, 1/3]]}
-
-    T_kernel = Q_kernel = {0: [[0, 1, 0], [0, 0, 1], [1, 0, 0]],
-        1/6: [[1/18, 8/9, 1/18], [1/18, 1/18, 8/9], [8/9, 1/18, 1/18]],
-        1/3: [[1/9, 7/9, 1/9], [1/9, 1/9, 7/9], [7/9, 1/9, 1/9]],
-        1/2: [[1/6, 2/3, 1/6], [1/6, 1/6, 2/3], [2/3, 1/6, 1/6]],
-        2/3: [[2/9, 5/9, 2/9], [2/9, 2/9, 5/9], [5/9, 2/9, 2/9]],
-        1: [[1/3, 1/3, 1/3], [1/3, 1/3, 1/3], [1/3, 1/3, 1/3]]}
-
-    num_trials = 1
-
-    losses = {}  # (delta_t, delta_q) -> avg loss
+def TQ_sweep(T_kernel, Q_kernel, num_trials = 3, results_path = RESULTS_PATH):
+    # holds the number of actions (m) fixed and sweeps delta(T), delta(Q)
+    losses = {}  # delta_t -> [avg loss per delta_q]
 
     total = len(T_kernel) * len(Q_kernel)
-    with tqdm(total = total, desc="sweep") as pbar:
+    with tqdm(total = total, desc="T/Q sweep") as pbar:
         for delta_t, t_matrix in T_kernel.items():
             transition_kernel = np.array(t_matrix)
             losses[delta_t] = []
@@ -110,6 +104,58 @@ if __name__ == "__main__":
 
     delta_T_values = list(T_kernel.keys())
     delta_Q_values = list(Q_kernel.keys())
-    grid = np.array([losses[c] for c in T_kernel]).T 
+    grid = np.array([losses[c] for c in T_kernel]).T
 
-    plot_loss_grid(delta_T_values, delta_Q_values, grid, RESULTS_PATH)
+    plot_loss_grid(delta_T_values, delta_Q_values, grid, results_path)
+    return losses
+
+
+def m_sweep(m_values, transition_kernel, observation_kernel, num_trials = 3, results_path = RESULTS_PATH):
+    # holds T, Q fixed and sweeps the number of actions (m)
+    transition_kernel = np.array(transition_kernel)
+    observation_kernel = np.array(observation_kernel)
+
+    losses = []
+    with tqdm(total = len(m_values), desc="m-actions sweep") as pbar:
+        for m_val in m_values:
+            set_action_quantization(m_val)
+
+            loss_sum = 0
+            for trial in range(num_trials):
+                actions, mu, y = train(generate_pairs, transition_kernel, observation_kernel)
+                mu_test, y_test = test(actions, generate_pairs, transition_kernel, observation_kernel)
+                test_loss = C_T(mu_test[T], y_test, LOSS, actions[-1])
+                loss_sum += test_loss
+
+            losses.append(loss_sum / num_trials)
+            pbar.update(1)
+
+    print(dict(zip(m_values, losses)))
+
+    plot_loss_line(m_values, losses, results_path)
+    return losses
+
+
+if __name__ == "__main__":
+
+    T_kernel = {0: [[0, 1, 0], [0, 0, 1], [1, 0, 0]],
+        1/6: [[1/18, 8/9, 1/18], [1/18, 1/18, 8/9], [8/9, 1/18, 1/18]],
+        1/3: [[1/9, 7/9, 1/9], [1/9, 1/9, 7/9], [7/9, 1/9, 1/9]],
+        1/2: [[1/6, 2/3, 1/6], [1/6, 1/6, 2/3], [2/3, 1/6, 1/6]],
+        2/3: [[2/9, 5/9, 2/9], [2/9, 2/9, 5/9], [5/9, 2/9, 2/9]],
+        1: [[1/3, 1/3, 1/3], [1/3, 1/3, 1/3], [1/3, 1/3, 1/3]]}
+
+    Q_kernel = {0: [[0, 0, 1], [1, 0, 0], [0, 1, 0]],
+        1/6: [[1/18, 1/18, 8/9], [8/9, 1/18, 1/18], [1/18, 8/9, 1/18]],
+        1/3: [[1/9, 1/9, 7/9], [7/9, 1/9, 1/9], [1/9, 7/9, 1/9]],
+        1/2: [[1/6, 1/6, 2/3], [2/3, 1/6, 1/6], [1/6, 2/3, 1/6]],
+        2/3: [[2/9, 2/9, 5/9], [5/9, 2/9, 2/9], [2/9, 5/9, 2/9]],
+        1: [[1/3, 1/3, 1/3], [1/3, 1/3, 1/3], [1/3, 1/3, 1/3]]}
+
+    num_trials = 1
+
+    #TQ_sweep(T_kernel, Q_kernel, num_trials = num_trials)
+
+    # holds T, Q fixed at a single kernel each and sweeps the number of actions (m)
+    m_values = [1, 2, 3]
+    m_sweep(m_values, T_kernel[1/3], Q_kernel[1/3], num_trials = num_trials)
