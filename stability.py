@@ -9,6 +9,22 @@ from common import *
 RESULTS_PATH = r"C:\Users\jakef\Projects\next-token-prediction-control\results\stability"
 os.makedirs(RESULTS_PATH, exist_ok=True)
 
+def create_kernel(delta, n, offset):
+
+    result = []
+
+    first_row = [round(delta / n, 2) for i in range(n)]
+    first_row[offset] += 1.0 - sum(first_row)
+
+    result.append(first_row)
+
+    for i in range(n - 1):
+        shifted = [result[-1][-1]] + result[-1][:-1]
+        result.append(shifted)
+
+    return result
+
+
 def plot_loss_grid(delta_T_values, delta_Q_values, grid, PATH):
     nx = len(delta_T_values)
     ny = len(delta_Q_values)
@@ -138,22 +154,13 @@ def m_sweep(m_values, transition_kernel, observation_kernel, num_trials = 3, res
 
 if __name__ == "__main__":
 
-    T_kernel = {0: [[0, 1, 0], [0, 0, 1], [1, 0, 0]],
-        1/6: [[1/18, 8/9, 1/18], [1/18, 1/18, 8/9], [8/9, 1/18, 1/18]],
-        1/3: [[1/9, 7/9, 1/9], [1/9, 1/9, 7/9], [7/9, 1/9, 1/9]],
-        1/2: [[1/6, 2/3, 1/6], [1/6, 1/6, 2/3], [2/3, 1/6, 1/6]],
-        2/3: [[2/9, 5/9, 2/9], [2/9, 2/9, 5/9], [5/9, 2/9, 2/9]],
-        1: [[1/3, 1/3, 1/3], [1/3, 1/3, 1/3], [1/3, 1/3, 1/3]]}
-
-    Q_kernel = {0: [[0, 0, 1], [1, 0, 0], [0, 1, 0]],
-        1/6: [[1/18, 1/18, 8/9], [8/9, 1/18, 1/18], [1/18, 8/9, 1/18]],
-        1/3: [[1/9, 1/9, 7/9], [7/9, 1/9, 1/9], [1/9, 7/9, 1/9]],
-        1/2: [[1/6, 1/6, 2/3], [2/3, 1/6, 1/6], [1/6, 2/3, 1/6]],
-        2/3: [[2/9, 2/9, 5/9], [5/9, 2/9, 2/9], [2/9, 5/9, 2/9]],
-        1: [[1/3, 1/3, 1/3], [1/3, 1/3, 1/3], [1/3, 1/3, 1/3]]}
-
     num_trials = 1
 
+    delta_values = [0, 1/6, 1/3, 1/2, 2/3, 1]
+    T_kernel = {delta: create_kernel(delta, n, 1) for delta in delta_values}
+    Q_kernel = {delta: create_kernel(delta, n, -1) for delta in delta_values}
+
+    # holds number of actions (m) fixed and sweeps T, Q for varying dobrushin coeffecients
     #TQ_sweep(T_kernel, Q_kernel, num_trials = num_trials)
 
     # holds T, Q fixed at a single kernel each and sweeps the number of actions (m)
