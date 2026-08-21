@@ -364,7 +364,7 @@ l = 9       # probability measure quantizations
 
 n = 3       # state space quantizations
 
-m = 2       # action space quantization
+m = 3       # action space quantization
 #m = 5
 
 N = 2       # length of prompt/order of markov chain
