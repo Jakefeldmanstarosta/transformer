@@ -1,4 +1,5 @@
 import os
+import json
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -42,11 +43,11 @@ def plot_loss_grid(delta_T_values, delta_Q_values, grid, PATH):
     plt.close()
 
 
-def plot_loss_line(m_values, losses, PATH):
-    plt.plot(m_values, losses, marker='o')
-    plt.xlabel("m (actions quantization)")
+def plot_loss_line(x_values, losses, PATH, xlabel, filename):
+    plt.plot(x_values, losses, marker='o')
+    plt.xlabel(xlabel)
     plt.ylabel("test loss")
-    plt.savefig(os.path.join(PATH, "actions-line.png"), bbox_inches='tight')
+    plt.savefig(os.path.join(PATH, filename), bbox_inches='tight')
     plt.close()
 
 
@@ -87,6 +88,7 @@ def generate_pairs(n, K_tilde, N, transition_kernel, observation_kernel, mode = 
 def TQ_sweep(T_kernel, Q_kernel, num_trials = 3, results_path = RESULTS_PATH):
     # holds the number of actions (m) fixed and sweeps delta(T), delta(Q)
     losses = {}  # delta_t -> [avg loss per delta_q]
+    weights = []
 
     total = len(T_kernel) * len(Q_kernel)
     with tqdm(total = total, desc="T/Q sweep") as pbar:
@@ -113,6 +115,15 @@ def TQ_sweep(T_kernel, Q_kernel, num_trials = 3, results_path = RESULTS_PATH):
 
                     loss_sum += test_loss
 
+                    weights.append({
+                        "delta_t": delta_t,
+                        "delta_q": delta_q,
+                        "trial": trial,
+                        "train_loss": float(train_loss),
+                        "test_loss": float(test_loss),
+                        "weights": [action_to_dict(u) for u in actions]
+                    })
+
                 losses[delta_t].append(loss_sum / num_trials)
                 pbar.update(1)
 
@@ -123,6 +134,10 @@ def TQ_sweep(T_kernel, Q_kernel, num_trials = 3, results_path = RESULTS_PATH):
     grid = np.array([losses[c] for c in T_kernel]).T
 
     plot_loss_grid(delta_T_values, delta_Q_values, grid, results_path)
+
+    with open(os.path.join(results_path, "tq-weights.json"), "w") as file_handle:
+        json.dump(weights, file_handle, indent = 2)
+
     return losses
 
 
@@ -132,6 +147,7 @@ def m_sweep(m_values, transition_kernel, observation_kernel, num_trials = 3, res
     observation_kernel = np.array(observation_kernel)
 
     losses = []
+    weights = []
     with tqdm(total = len(m_values), desc="m-actions sweep") as pbar:
         for m_val in m_values:
             set_action_quantization(m_val)
@@ -139,22 +155,76 @@ def m_sweep(m_values, transition_kernel, observation_kernel, num_trials = 3, res
             loss_sum = 0
             for trial in range(num_trials):
                 actions, mu, y = train(generate_pairs, transition_kernel, observation_kernel)
+                train_loss = C_T(mu[T], y, LOSS, actions[-1])
+
                 mu_test, y_test = test(actions, generate_pairs, transition_kernel, observation_kernel)
                 test_loss = C_T(mu_test[T], y_test, LOSS, actions[-1])
                 loss_sum += test_loss
+
+                weights.append({
+                    "m": m_val,
+                    "trial": trial,
+                    "train_loss": float(train_loss),
+                    "test_loss": float(test_loss),
+                    "weights": [action_to_dict(u) for u in actions]
+                })
 
             losses.append(loss_sum / num_trials)
             pbar.update(1)
 
     print(dict(zip(m_values, losses)))
 
-    plot_loss_line(m_values, losses, results_path)
+    plot_loss_line(m_values, losses, results_path, "m (actions quantization)", "actions-line.png")
+
+    with open(os.path.join(results_path, "m-weights.json"), "w") as file_handle:
+        json.dump(weights, file_handle, indent = 2)
+
+    return losses
+
+
+def n_sweep(n_values, delta_t, delta_q, num_trials = 3, results_path = RESULTS_PATH):
+    # holds delta(T), delta(Q), and m fixed and sweeps the state quantization (n)
+    losses = []
+    weights = []
+    with tqdm(total = len(n_values), desc="n-state sweep") as pbar:
+        for n_val in n_values:
+            set_state_quantization(n_val)
+            transition_kernel = np.array(create_kernel(delta_t, n_val, 1))
+            observation_kernel = np.array(create_kernel(delta_q, n_val, -1))
+
+            loss_sum = 0
+            for trial in range(num_trials):
+                actions, mu, y = train(generate_pairs, transition_kernel, observation_kernel)
+                train_loss = C_T(mu[T], y, LOSS, actions[-1])
+
+                mu_test, y_test = test(actions, generate_pairs, transition_kernel, observation_kernel)
+                test_loss = C_T(mu_test[T], y_test, LOSS, actions[-1])
+                loss_sum += test_loss
+
+                weights.append({
+                    "n": n_val,
+                    "trial": trial,
+                    "train_loss": float(train_loss),
+                    "test_loss": float(test_loss),
+                    "weights": [action_to_dict(u) for u in actions]
+                })
+
+            losses.append(loss_sum / num_trials)
+            pbar.update(1)
+
+    print(dict(zip(n_values, losses)))
+
+    plot_loss_line(n_values, losses, results_path, "n (state quantization)", "states-line.png")
+
+    with open(os.path.join(results_path, "n-weights.json"), "w") as file_handle:
+        json.dump(weights, file_handle, indent = 2)
+
     return losses
 
 
 if __name__ == "__main__":
 
-    num_trials = 1
+    num_trials = 3
 
     delta_values = [0, 1/6, 1/3, 1/2, 2/3, 1]
     T_kernel = {delta: create_kernel(delta, n, 1) for delta in delta_values}
@@ -164,5 +234,9 @@ if __name__ == "__main__":
     #TQ_sweep(T_kernel, Q_kernel, num_trials = num_trials)
 
     # holds T, Q fixed at a single kernel each and sweeps the number of actions (m)
-    m_values = [1, 2, 3]
+    m_values = [1, 2, 3, 4, 5]
     m_sweep(m_values, T_kernel[1/3], Q_kernel[1/3], num_trials = num_trials)
+
+    # holds delta(T), delta(Q), and m fixed and sweeps the state quantization (n)
+    #n_values = [2, 3, 4]
+    #n_sweep(n_values, 1/3, 1/3, num_trials = num_trials)

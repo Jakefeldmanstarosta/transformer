@@ -409,3 +409,11 @@ def set_action_quantization(m_new):
     return U_m
 
 set_action_quantization(m)
+
+def set_state_quantization(n_new):
+    # rebuild the global S_n, cost_matrix
+    global n, S_n, cost_matrix
+    n = n_new
+    S_n = np.linspace(*S, n_new)
+    cost_matrix = np.array([[np.linalg.norm(s1 - s2)**2 for s1 in S_n] for s2 in S_n])
+    return S_n
